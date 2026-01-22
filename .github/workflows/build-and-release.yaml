@@ -1,6 +1,11 @@
 name: Build Release
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
 
 permissions:
   contents: write
@@ -111,5 +116,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          tag_name: ${{ github.event.inputs.tag }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
