@@ -1,65 +1,60 @@
-name: Wheels Index
+name: Generate Index from Release
 
 on:
-  # Trigger on new release
-  workflow_run:
-    workflows: ["Release", "Build Wheels (CUDA)", "Build Wheels (Metal)"]
-    types:
-      - completed
-
-  # Allows you to run this workflow manually from the Actions tab
+  release:
+    types: [published]
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
-# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
+  generate-index:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          enablement: true
+          fetch-depth: 0
 
-      - name: Generate wheel indices
+      - name: Setup Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Get releases
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
-          chmod +x scripts/*.sh
-          ./scripts/get-releases.sh
-          ./scripts/releases-to-pep-503.sh index/whl/cpu    '^[v]?[0-9]+\.[0-9]+\.[0-9]+$'
-          ./scripts/releases-to-pep-503.sh index/whl/cu121  '^[v]?[0-9]+\.[0-9]+\.[0-9]+-cu121$'
-          ./scripts/releases-to-pep-503.sh index/whl/cu122  '^[v]?[0-9]+\.[0-9]+\.[0-9]+-cu122$'
-          ./scripts/releases-to-pep-503.sh index/whl/cu123  '^[v]?[0-9]+\.[0-9]+\.[0-9]+-cu123$'
-          ./scripts/releases-to-pep-503.sh index/whl/cu124  '^[v]?[0-9]+\.[0-9]+\.[0-9]+-cu124$'
-          ./scripts/releases-to-pep-503.sh index/whl/metal  '^[v]?[0-9]+\.[0-9]+\.[0-9]+-metal$'
+          chmod +x ./scripts/get-releases.sh
+          ./scripts/get-releases.sh > releases.json
 
-      - name: List output
+      - name: Generate PEP 503 index
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
-          ls -R index || true
+          chmod +x ./scripts/releases-to-pep-503.sh
+          ./scripts/releases-to-pep-503.sh releases.json whl
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: index
+      - name: Add .nojekyll file
+        run: |
+          touch whl/.nojekyll
 
       - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./whl
+          publish_branch: gh-pages
+          force_orphan: true
+          enable_jekyll: false
