@@ -15,8 +15,10 @@ jobs:
   download-model:
     runs-on: ubuntu-latest
     steps:
-      - name: Update submodules
-        run: git submodule update --init --recursive
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
