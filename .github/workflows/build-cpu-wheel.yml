@@ -1,4 +1,4 @@
-name: build-cpu-wheel-hf
+name: Build Wheels (CPU)
 
 on:
   workflow_dispatch:
