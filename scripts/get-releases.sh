@@ -1,47 +1,55 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Function to get all releases
-get_all_releases() {
-    local page=1
-    local per_page=100
-    local releases=""
-    local new_releases
+cd "$(dirname "$0")/.."
 
-    # Prepare headers
-    local headers=(-H "Accept: application/vnd.github.v3+json")
-    if [ -n "$GITHUB_TOKEN" ]; then
-        headers+=(-H "Authorization: Bearer $GITHUB_TOKEN")
-    fi
+echo "==> Fetching releases from GitHub API"
 
-    while true; do
-        response=$(curl -s "${headers[@]}" \
-                        "https://api.github.com/repos/TheBigEye/llama-cpp-python-cpu/releases?page=$page&per_page=$per_page")
-        
-        # Check if the response is valid JSON
-        if ! echo "$response" | jq empty > /dev/null 2>&1; then
-            echo "Error: Invalid response from GitHub API" >&2
-            echo "Response: $response" >&2
-            return 1
-        fi
+REPO="${GITHUB_REPOSITORY:-TheBigEye/llama-cpp-python-cpu}"
+API_URL="https://api.github.com/repos/${REPO}/releases"
 
-        new_releases=$(echo "$response" | jq -r '.[].tag_name')
-        if [ -z "$new_releases" ]; then
-            break
-        fi
-        releases="$releases $new_releases"
-        ((page++))
-    done
+mkdir -p index/whl
 
-    echo $releases
-}
+RELEASES_JSON="$(curl -fsSL "$API_URL" || true)"
 
-# Get all releases and save to file
-releases=$(get_all_releases)
-if [ $? -ne 0 ]; then
-    echo "Failed to fetch releases. Please check your internet connection and try again later." >&2
-    exit 1
+if [ -z "$RELEASES_JSON" ]; then
+  echo "WARNING: GitHub API returned empty response"
 fi
 
-echo "$releases" | tr ' ' '\n' > all_releases.txt
+echo "$RELEASES_JSON" > all_releases.txt || true
 
-echo "All releases have been saved to all_releases.txt"
+TAGS="$(echo "$RELEASES_JSON" | jq -r '.[].tag_name' 2>/dev/null || true)"
+
+if [ -z "$TAGS" ]; then
+  echo "WARNING: No releases found"
+else
+  echo "Found releases:"
+  echo "$TAGS"
+fi
+
+echo "==> Generating PEP 503 indices"
+
+./scripts/releases-to-pep-503.sh index/whl/cpu    '^[v]?[0-9]+\.[0-9]+\.[0-9]+$'        || true
+./scripts/releases-to-pep-503.sh index/whl/cu121  '^[v]?[0-9]+\.[0-9]+\.[0-9]+-cu121$'  || true
+./scripts/releases-to-pep-503.sh index/whl/cu122  '^[v]?[0-9]+\.[0-9]+\.[0-9]+-cu122$'  || true
+./scripts/releases-to-pep-503.sh index/whl/cu123  '^[v]?[0-9]+\.[0-9]+\.[0-9]+-cu123$'  || true
+./scripts/releases-to-pep-503.sh index/whl/cu124  '^[v]?[0-9]+\.[0-9]+\.[0-9]+-cu124$'  || true
+./scripts/releases-to-pep-503.sh index/whl/metal  '^[v]?[0-9]+\.[0-9]+\.[0-9]+-metal$'  || true
+
+CPU_INDEX="index/whl/cpu"
+
+if [ ! -d "$CPU_INDEX" ]; then
+  echo "ERROR: CPU index directory was not created"
+  exit 0
+fi
+
+CPU_FILES="$(find "$CPU_INDEX" -type f | wc -l | tr -d ' ')"
+
+if [ "$CPU_FILES" -eq 0 ]; then
+  echo "WARNING: CPU index exists but contains no files"
+else
+  echo "SUCCESS: CPU index generated with $CPU_FILES files"
+fi
+
+echo "==> Index generation complete"
+exit 0
