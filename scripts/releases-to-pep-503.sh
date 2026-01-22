@@ -68,7 +68,7 @@ headers+=('--header' 'content-type: application/json')
 for release in $releases; do
     log_info "Processing release: $release"
     response=$(curl -s "${headers[@]}" \
-                    "https://api.github.com/repos/abetlen/llama-cpp-python/releases/tags/$release")
+                    "https://api.github.com/repos/TheBigEye/llama-cpp-python-cpu/releases/tags/$release")
     
     if [ -z "$response" ]; then
         log_error "Empty response from GitHub API for release $release"
