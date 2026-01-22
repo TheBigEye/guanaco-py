@@ -32,8 +32,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        
+      - name: Make script executable
+        run: chmod +x ./scripts/get-releases.sh
+        
+      - name: Run get-releases.sh
+        run: ./scripts/get-releases.sh
+        
       - name: Build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
