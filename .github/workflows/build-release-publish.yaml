@@ -399,12 +399,9 @@ jobs:
     name: Deploy to GitHub Pages
     needs: generate_pypi_index
     runs-on: ubuntu-22.04
-    permissions:
-      pages: write
-      id-token: write
     environment:
       name: github-pages
       url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
     steps:
       - name: Deploy
-        uses: actions/deploy-pages@v3
+        uses: actions/deploy-pages@v4
