@@ -175,33 +175,38 @@ jobs:
           New-Item -ItemType Directory -Force -Path "dist/whl/cu122"
           New-Item -ItemType Directory -Force -Path "dist/whl/cu123"
           New-Item -ItemType Directory -Force -Path "dist/whl/cu124"
-
-          # Organize wheels by version
+      
+          # Organize wheels by containing artifact directory name
           Get-ChildItem -Path "wheels-all" -Recurse -Filter "*.whl" | ForEach-Object {
               $wheelName = $_.Name
-              if ($wheelName -match "wheel-cpu") {
+              $artifactDir = $_.Directory.Name
+      
+              if ($artifactDir -match "wheel-cpu") {
                   Copy-Item $_.FullName -Destination "dist/whl/cpu/"
-                  Write-Host "CPU: $wheelName"
+                  Write-Host "CPU: $wheelName (from $artifactDir)"
               }
-              elseif ($wheelName -match "cu121") {
+              elseif ($artifactDir -match "cu121") {
                   Copy-Item $_.FullName -Destination "dist/whl/cu121/"
-                  Write-Host "CUDA 12.1: $wheelName"
+                  Write-Host "CUDA 12.1: $wheelName (from $artifactDir)"
               }
-              elseif ($wheelName -match "cu122") {
+              elseif ($artifactDir -match "cu122") {
                   Copy-Item $_.FullName -Destination "dist/whl/cu122/"
-                  Write-Host "CUDA 12.2: $wheelName"
+                  Write-Host "CUDA 12.2: $wheelName (from $artifactDir)"
               }
-              elseif ($wheelName -match "cu123") {
+              elseif ($artifactDir -match "cu123") {
                   Copy-Item $_.FullName -Destination "dist/whl/cu123/"
-                  Write-Host "CUDA 12.3: $wheelName"
+                  Write-Host "CUDA 12.3: $wheelName (from $artifactDir)"
               }
-              elseif ($wheelName -match "cu124") {
+              elseif ($artifactDir -match "cu124") {
                   Copy-Item $_.FullName -Destination "dist/whl/cu124/"
-                  Write-Host "CUDA 12.4: $wheelName"
+                  Write-Host "CUDA 12.4: $wheelName (from $artifactDir)"
+              }
+              else {
+                  Write-Host "Unknown: $wheelName (from $artifactDir)"
               }
           }
-
-          # List contents
+      
+          # List contents for debug
           Get-ChildItem -Path "dist/whl" -Recurse
 
       - name: Generate PyPI indices
