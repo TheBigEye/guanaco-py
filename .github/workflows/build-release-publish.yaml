@@ -185,7 +185,7 @@ jobs:
     needs: [get_version, build_wheels_cpu]
     runs-on: ubuntu-22.04
     env:
-      GH_TOKEN: ${{ github.token }}  # Necesario para gh CLI
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -224,7 +224,7 @@ jobs:
       matrix:
         short: [cu121, cu122, cu123, cu124]
     env:
-      GH_TOKEN: ${{ github.token }}  # Necesario para gh CLI
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -271,6 +271,8 @@ jobs:
     name: Generate PyPI Index
     needs: [get_version, collect_cpu, collect_cuda]
     runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Create base directory
         run: mkdir -p dist/whl/{cpu,cu121,cu122,cu123,cu124}
@@ -317,47 +319,39 @@ jobs:
               if not wheels:
                   continue
 
-              # Create config-level simple index (like abetlen's /whl/cpu/)
+              # Simple index en /whl/{config}/index.html (exactamente como abetlen)
               config_dir = f'dist/whl/{config}'
               os.makedirs(config_dir, exist_ok=True)
-              config_index_path = f'{config_dir}/index.html'
-              config_html = [
-                  '<!DOCTYPE html>',
-                  '<html>',
-                  '  <head><title>simple index</title></head>',
-                  '  <body>',
-                  f'    <a href="{package_name}/">{package_name}</a><br/>',
-                  '  </body>',
-                  '</html>'
-              ]
-              with open(config_index_path, 'w', encoding='utf-8') as f:
-                  f.write('\n'.join(config_html))
+              with open(f'{config_dir}/index.html', 'w', encoding='utf-8') as f:
+                  f.write('<!DOCTYPE html>\n')
+                  f.write('<html>\n')
+                  f.write('  <head><title>simple index</title></head>\n')
+                  f.write('  <body>\n')
+                  f.write(f'    <a href="{package_name}/">{package_name}</a><br/>\n')
+                  f.write('  </body>\n')
+                  f.write('</html>\n')
 
-              # Create package-level index with wheel list
+              # Lista de wheels en /whl/{config}/{package_name}/index.html (sin hash, sin <h2> extra, igual a abetlen)
               package_dir = f'{config_dir}/{package_name}'
               os.makedirs(package_dir, exist_ok=True)
-              project_html = [
-                  '<!DOCTYPE html>',
-                  '<html>',
-                  '  <head>',
-                  f'    <title>Links for {package_name}</title>',
-                  '  </head>',
-                  '  <body>',
-                  f'    <h1>Links for {package_name}</h1>',
-              ]
-
-              for wheel in wheels:
-                  url = f"https://github.com/{repo}/releases/download/{tag}/{wheel}"
-                  project_html.append(f'    <a href="{url}#sha256=...">{wheel}</a><br/>')  # pip ignora hash, pero es estándar PEP 503
-
-              project_html.extend(['  </body>', '</html>'])
-
               with open(f'{package_dir}/index.html', 'w', encoding='utf-8') as f:
-                  f.write('\n'.join(project_html))
+                  f.write('<!DOCTYPE html>\n')
+                  f.write('<html>\n')
+                  f.write('  <head>\n')
+                  f.write(f'    <title>Links for {package_name}</title>\n')
+                  f.write('  </head>\n')
+                  f.write('  <body>\n')
+                  f.write(f'    <h1>Links for {package_name}</h1>\n')
+                  for wheel in wheels:
+                      url = f"https://github.com/{repo}/releases/download/{tag}/{wheel}"
+                      f.write(f'    <a href="{url}">{wheel}</a><br/>\n')
+                  f.write('  </body>\n')
+                  f.write('</html>\n')
 
-              print(f"✓ Generated PEP 503 index for {info['label']}")
+              print(f"✓ Generated indices for {info['label']} ({len(wheels)} wheels)")
               available_configs.append((config, info['label']))
 
+          # Página raíz (mejorada un poco para claridad)
           root_html = [
               '<!DOCTYPE html>',
               '<html>',
@@ -378,8 +372,8 @@ jobs:
                   f'    <p><code>pip install llama-cpp-python --extra-index-url {index_url}</code></p>',
                   '    <p><strong>Force wheels only (recommended on Windows):</strong></p>',
                   f'    <p><code>pip install llama-cpp-python --only-binary=:all: --extra-index-url {index_url}</code></p>',
-                  f'    <p><a href="whl/{config}/{package_name}/">View full wheel list (PEP 503) →</a></p>',
-                  f'    <p><a href="whl/{config}/">View simple directory index →</a></p>',
+                  f'    <p><a href="whl/{config}/">Simple directory index →</a></p>',
+                  f'    <p><a href="whl/{config}/{package_name}/">Full wheel list (PEP 503) →</a></p>',
               ])
 
           root_html.extend([
