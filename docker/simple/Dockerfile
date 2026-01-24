@@ -28,8 +28,7 @@ COPY . /app
 RUN python3 -m pip install --upgrade pip
 RUN python3 -m pip install pytest scikit-build setuptools fastapi uvicorn sse-starlette pydantic-settings starlette-context
 
-# Install the local package with server extras and optimized CMake flags
-ENV CMAKE_ARGS="-DGGML_AVX=on -DGGML_AVX2=on -DGGML_FMA=on -DGGML_F16C=on"
+# Install the local package with server extras
 RUN pip install .[server] --verbose --no-cache-dir
 
 # Set environment for server
