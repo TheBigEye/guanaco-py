@@ -39,7 +39,11 @@ if TYPE_CHECKING:
 # Specify the base name of the shared library to load
 _libmtmd_base_name = "mtmd"
 _libmtmd_override_path = os.environ.get("MTMD_CPP_LIB")
-_libmtmd_base_path = pathlib.Path(os.path.abspath(os.path.dirname(__file__))) / "lib" if _libmtmd_override_path is None else pathlib.Path()
+_libmtmd_base_path = (
+    pathlib.Path(os.path.abspath(os.path.dirname(__file__))) / "lib"
+    if _libmtmd_override_path is None
+    else pathlib.Path(_libmtmd_override_path)
+)
 
 # Load the library
 _libmtmd = load_shared_library(_libmtmd_base_name, _libmtmd_base_path)
@@ -77,9 +81,12 @@ class mtmd_context_params(Structure):
         ("use_gpu", c_bool),
         ("print_timings", c_bool),
         ("n_threads", c_int),
-        ("verbosity", c_int),  # ggml_log_level
         ("image_marker", c_char_p),
         ("media_marker", c_char_p),
+        ("flash_attn_type", c_int),  # enum llama_flash_attn_type
+        ("warmup", c_bool),
+        ("image_min_tokens", c_int),
+        ("image_max_tokens", c_int),
     ]
 
 class mtmd_input_text(Structure):
@@ -109,7 +116,7 @@ def mtmd_context_params_default() -> mtmd_context_params:
 @ctypes_function(
     "mtmd_init_from_file",
     [c_char_p, llama_cpp.llama_model_p_ctypes, mtmd_context_params],
-    mtmd_context_p_ctypes
+    mtmd_context_p_ctypes,
 )
 def mtmd_init_from_file(
     mmproj_fname: bytes,
@@ -131,9 +138,7 @@ def mtmd_support_vision(ctx: mtmd_context_p, /) -> bool:
 
 # MTMD_API mtmd_bitmap * mtmd_bitmap_init(uint32_t nx, uint32_t ny, const unsigned char * data);
 @ctypes_function(
-    "mtmd_bitmap_init",
-    [c_uint32, c_uint32, POINTER(c_uint8)],
-    mtmd_bitmap_p_ctypes
+    "mtmd_bitmap_init", [c_uint32, c_uint32, POINTER(c_uint8)], mtmd_bitmap_p_ctypes
 )
 def mtmd_bitmap_init(
     nx: Union[c_uint32, int],
@@ -167,7 +172,7 @@ def mtmd_input_chunks_size(chunks: mtmd_input_chunks_p, /) -> int:
 @ctypes_function(
     "mtmd_input_chunks_get",
     [mtmd_input_chunks_p_ctypes, c_size_t],
-    mtmd_input_chunk_p_ctypes
+    mtmd_input_chunk_p_ctypes,
 )
 def mtmd_input_chunks_get(
     chunks: mtmd_input_chunks_p, idx: Union[c_size_t, int], /
@@ -214,7 +219,7 @@ def mtmd_input_chunk_get_type(chunk: mtmd_input_chunk_p, /) -> int:
 @ctypes_function(
     "mtmd_input_chunk_get_tokens_text",
     [mtmd_input_chunk_p_ctypes, POINTER(c_size_t)],
-    POINTER(llama_cpp.llama_token)
+    POINTER(llama_cpp.llama_token),
 )
 def mtmd_input_chunk_get_tokens_text(
     chunk: mtmd_input_chunk_p, n_tokens_output: "_Pointer[c_size_t]", /

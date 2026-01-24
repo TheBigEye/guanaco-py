@@ -53,7 +53,7 @@ if (LLAMA_BUILD)
     # When building, don't use the install RPATH already
     # (but later on when installing)
     set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
- 
+
     # Add the automatically determined parts of the RPATH
     # which point to directories outside the build tree to the install RPATH
     set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
@@ -152,6 +152,15 @@ if (LLAMA_BUILD)
         if (LLAMA_METAL)
             add_compile_definitions(GGML_USE_METAL)
         endif()
+
+        # Set version for mtmd (required by upstream CMakeLists.txt)
+        # NOTE: This is a workaround for mtmd build requirements.
+        # Version is set to 0.0.0 for local builds. If upstream adds version
+        # compatibility checks, this may need to match llama.cpp version.
+        if (NOT DEFINED LLAMA_BUILD_NUMBER)
+            set(LLAMA_BUILD_NUMBER 0)
+        endif()
+        set(LLAMA_INSTALL_VERSION 0.0.${LLAMA_BUILD_NUMBER})
 
         # Building llava
         add_subdirectory(vendor/llama.cpp/tools/mtmd)
