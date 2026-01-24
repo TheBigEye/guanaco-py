@@ -6,22 +6,24 @@
 
 [![Documentation Status](https://readthedocs.org/projects/llama-cpp-python/badge/?version=latest)](https://llama-cpp-python.readthedocs.io/en/latest/?badge=latest)
 [![Tests](https://github.com/TheBigEye/llama-cpp-python/actions/workflows/test.yaml/badge.svg?branch=main)](https://github.com/TheBigEye/llama-cpp-python/actions/workflows/test.yaml)
-# [![PyPI](https://img.shields.io/pypi/v/llama-cpp-python)](https://pypi.org/project/llama-cpp-python/)
-# [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/llama-cpp-python)](https://pypi.org/project/llama-cpp-python/)
-# [![PyPI - License](https://img.shields.io/pypi/l/llama-cpp-python)](https://pypi.org/project/llama-cpp-python/)
-# [![PyPI - Downloads](https://static.pepy.tech/badge/llama-cpp-python/month)](https://pepy.tech/projects/llama-cpp-python)
 [![Github All Releases](https://img.shields.io/github/downloads/TheBigEye/llama-cpp-python/total.svg?label=Github%20Downloads)]()
+<!--- [![PyPI](https://img.shields.io/pypi/v/llama-cpp-python)](https://pypi.org/project/llama-cpp-python/) --->
+<!--- [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/llama-cpp-python)](https://pypi.org/project/llama-cpp-python/) --->
+<!--- [![PyPI - License](https://img.shields.io/pypi/l/llama-cpp-python)](https://pypi.org/project/llama-cpp-python/) --->
+<!--- [![PyPI - Downloads](https://static.pepy.tech/badge/llama-cpp-python/month)](https://pepy.tech/projects/llama-cpp-python) --->
+
 
 Simple Python bindings for **@ggerganov's** [`llama.cpp`](https://github.com/ggerganov/llama.cpp) library.
 
-> ⚠️ **Fork notice**
+> [!NOTE]
 >
 > This repository is a **fork** of the original **[`abetlen/llama-cpp-python`](https://github.com/abetlen/llama-cpp-python)** project. The original repository has been largely inactive and unmaintained for some time, 
 and because one of my most important projects depends on this, so this fork was created to maintain the original repo and also follow a different path: **dedicated CPU and CUDA only support (no METAL, no MacOS)** for better stability and simplicity.
 >
 > If you require METAL / ARM support, please refer to the original repository: **[https://github.com/abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python)** — this fork intentionally focuses on CPU and CUDA only usage.
 
-> NOTE: This readme is still under development, so all documentation still refers to the original repository and module. 
+> [!NOTE]
+> This readme is still under development, so all documentation still refers to the original repository and module. 
 
 This package provides:
 
