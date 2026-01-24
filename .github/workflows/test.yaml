@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - dev
 
 env:
   REPO_ID: Qwen/Qwen2-0.5B-Instruct-GGUF
