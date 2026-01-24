@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/TheBigEye/llama-cpp-python-cpu/main/docs/icon.svg" style="height: 20rem; width: 20rem">
+  <img src="https://raw.githubusercontent.com/TheBigEye/llama-cpp-python/main/docs/icon.svg" style="height: 20rem; width: 20rem">
 </p>
 
 #  Python Bindings for [`llama.cpp`](https://github.com/ggerganov/llama.cpp)
@@ -14,12 +14,11 @@
 
 Simple Python bindings for **@ggerganov's** [`llama.cpp`](https://github.com/ggerganov/llama.cpp) library.
 
-> **Fork notice — CPU-only fork**
+> **Fork notice**
 >
-> This repository is a **fork** of the original [`abetlen/llama-cpp-python`](https://github.com/abetlen/llama-cpp-python) project. The original repository has been largely inactive and unmaintained for some time, so this fork was created to follow a different path: **dedicated CPU-only support (no CUDA)** for better stability and simplicity on CPU machines.
+> This repository is a **fork** of the original [`abetlen/llama-cpp-python`](https://github.com/abetlen/llama-cpp-python) project. The original repository has been largely inactive and unmaintained for some time, so this fork was created to follow a different path: **dedicated CPU and CUDA only support (no METAL)** for better stability and simplicity.
 >
-> If you require CUDA / GPU support, please refer to the original repository: [https://github.com/abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python) — this fork intentionally focuses on CPU-only usage.
-
+> If you require METAL / ARM support, please refer to the original repository: [https://github.com/abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python) — this fork intentionally focuses on CPU and CUDA only usage.
 
 > NOTE: This readme is still under development, so all documentation still refers to the original repository and module.
 
@@ -64,7 +63,14 @@ It is also possible to install a pre-built wheel with basic CPU support.
 
 ```bash
 pip install llama-cpp-python \
-  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+  --extra-index-url https://thebigeye.github.io/llama-cpp-python/whl/cpu
+```
+
+NOTE: Sometimes i recomend run this instead:
+
+```bash
+pip install llama-cpp-python \
+  --only-binary=:all: --extra-index-url https://TheBigEye.github.io/llama-cpp-python/whl/cpu/
 ```
 
 ### Installation Configuration
@@ -122,6 +128,87 @@ CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install llama-cpp-py
 ```
 </details>
 
+<details>
+<summary>CUDA</summary>
+
+To install with CUDA support, set the `GGML_CUDA=on` environment variable before installing:
+
+```bash
+CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+```
+
+**Pre-built Wheel (New)**
+
+It is also possible to install a pre-built wheel with CUDA support. As long as your system meets some requirements:
+
+- CUDA Version is 12.1, 12.2, 12.3, 12.4 or 12.5
+- Python Version is 3.10, 3.11 or 3.12
+
+```bash
+pip install llama-cpp-python \
+  --extra-index-url https://thebigeye.github.io/llama-cpp-python/whl/<cuda-version>
+```
+
+Where `<cuda-version>` is one of the following:
+- `cu121`: CUDA 12.1
+- `cu122`: CUDA 12.2
+- `cu123`: CUDA 12.3
+- `cu124`: CUDA 12.4
+- `cu125`: CUDA 12.5
+
+For example, to install the CUDA 12.1 wheel:
+
+```bash
+pip install llama-cpp-python \
+  --extra-index-url https://thebigeye.github.io/llama-cpp-python/whl/cu121
+```
+
+</details>
+
+<details>
+<summary>hipBLAS (ROCm)</summary>
+
+To install with hipBLAS / ROCm support for AMD cards, set the `GGML_HIPBLAS=on` environment variable before installing:
+
+```bash
+CMAKE_ARGS="-DGGML_HIPBLAS=on" pip install llama-cpp-python
+```
+
+</details>
+
+<details>
+<summary>Vulkan</summary>
+
+To install with Vulkan support, set the `GGML_VULKAN=on` environment variable before installing:
+
+```bash
+CMAKE_ARGS="-DGGML_VULKAN=on" pip install llama-cpp-python
+```
+
+</details>
+
+<details>
+<summary>SYCL</summary>
+
+To install with SYCL support, set the `GGML_SYCL=on` environment variable before installing:
+
+```bash
+source /opt/intel/oneapi/setvars.sh   
+CMAKE_ARGS="-DGGML_SYCL=on -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx" pip install llama-cpp-python
+```
+</details>
+
+<details>
+<summary>RPC</summary>
+
+To install with RPC support, set the `GGML_RPC=on` environment variable before installing:
+
+```bash
+source /opt/intel/oneapi/setvars.sh   
+CMAKE_ARGS="-DGGML_RPC=on" pip install llama-cpp-python
+```
+</details>
+
 
 ### Windows Notes
 
@@ -155,6 +242,7 @@ from llama_cpp import Llama
 
 llm = Llama(
       model_path="./models/7B/llama-model.gguf",
+      # n_gpu_layers=-1, # Uncomment to use GPU acceleration
       # seed=1337, # Uncomment to set a specific seed
       # n_ctx=2048, # Uncomment to increase the context window
 )
