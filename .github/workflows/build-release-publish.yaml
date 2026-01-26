@@ -59,7 +59,7 @@ jobs:
         run: |
           $pyvers = @("3.9", "3.10", "3.11", "3.12")
           $cudavers = @("12.1.1", "12.2.2", "12.3.2")
-          $shorts = @("cu121", "cu122", "cu123", "cu124")
+          $shorts = @("cu121", "cu122", "cu123")
 
           $includes = @()
 
@@ -117,7 +117,8 @@ jobs:
           MAMBA_NO_LOW_SPEED_LIMIT: "1"
         run: |
           mamba install -y 'cuda' -c nvidia/label/cuda-$env:CUDAVER
-          python -m pip install build wheel requests
+          python -m pip install build wheel requests cmake
+          python -m pip install --upgrade cmake
 
       - name: Build Wheel
         run: |
@@ -128,7 +129,7 @@ jobs:
             $env:LD_LIBRARY_PATH = $env:CONDA_PREFIX + '/lib:' + $env:LD_LIBRARY_PATH
           }
           $env:VERBOSE = '1'
-          $env:CMAKE_ARGS = '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=all -DGGML_CUDA_FORCE_MMQ=ON'
+          $env:CMAKE_ARGS = '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=all-major -DGGML_CUDA_FORCE_MMQ=ON'
           $env:CMAKE_ARGS = $env:CMAKE_ARGS + ' -DGGML_AVX2=off -DGGML_FMA=off -DGGML_F16C=off'
           python -m build --wheel
 
@@ -136,7 +137,7 @@ jobs:
         with:
           name: wheel-cuda-${{ matrix.pyver }}-${{ matrix.short }}
           path: dist/*.whl
-          retention-days: 7
+          retention-days: 4
           if-no-files-found: warn
           overwrite: true
 
@@ -161,6 +162,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install uv
           RUST_LOG=trace python -m uv pip install -e .[all] --verbose
+          python -m uv pip install cmake
+          python -m uv pip install --upgrade cmake
         shell: bash
 
       - name: Install dependencies (Windows)
@@ -171,6 +174,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install uv
           python -m uv pip install -e .[all] --verbose
+          python -m uv pip install cmake
+          python -m uv pip install --upgrade cmake
         shell: cmd
 
       - name: Build wheels
@@ -185,7 +190,7 @@ jobs:
         with:
           name: wheel-cpu-${{ matrix.os }}
           path: dist/*.whl
-          retention-days: 7
+          retention-days: 4
           if-no-files-found: warn
           overwrite: true
 
