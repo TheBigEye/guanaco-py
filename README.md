@@ -4,30 +4,28 @@
 
 #  Python Bindings for [`llama.cpp`](https://github.com/ggerganov/llama.cpp)
 
+**Personal maintained fork of the original [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python)**
+
 [![Forked from abetlen/llama-cpp-python](https://img.shields.io/badge/forked%20from-abetlen/llama--cpp--python-blue)](https://github.com/abetlen/llama-cpp-python)
 [![Tests](https://github.com/TheBigEye/guanaco-py/actions/workflows/test.yaml/badge.svg?branch=main)](https://github.com/TheBigEye/guanaco-py/actions/workflows/test.yaml)
 [![Github All Releases](https://img.shields.io/github/downloads/TheBigEye/guanaco-py/total.svg?label=Github%20Downloads)]()
 
-<!--- [![PyPI](https://img.shields.io/pypi/v/llama-cpp-python)](https://pypi.org/project/llama-cpp-python/) --->
-<!--- [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/llama-cpp-python)](https://pypi.org/project/llama-cpp-python/) --->
-<!--- [![PyPI - License](https://img.shields.io/pypi/l/llama-cpp-python)](https://pypi.org/project/llama-cpp-python/) --->
-<!--- [![PyPI - Downloads](https://static.pepy.tech/badge/llama-cpp-python/month)](https://pepy.tech/projects/llama-cpp-python) --->
+Python bindings for [@ggerganov's](https://github.com/ggerganov) [`llama.cpp`](https://github.com/ggerganov/llama.cpp) library.
+> [!NOTE]
+> This is my **personal fork** of the original `llama-cpp-python` project.
+> The original repository has been largely inactive, and since several of my projects depend on these bindings, I created this fork to:
+> - Provide active maintenance and quick fixes.
+> - Offer pre-built wheels for CPU and CUDA (with a focus on stability and simplicity).
+> - Intentionally limit support to **CPU and CUDA only** (no Metal, no macOS/ARM-specific builds) for better reliability on common server/desktop setups.
+> - Plan future custom enhancements and features that may diverge significantly from the original.
+> If you need Metal, macOS, or broader hardware support, please use the original repository: [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python).
 
-
-Simple Python bindings for **@ggerganov's** [`llama.cpp`](https://github.com/ggerganov/llama.cpp) library.
+> **Thanks to Andrei Betlen for the original work!**
 
 > [!NOTE]
->
-> This repository is a **fork** of the original **[`abetlen/llama-cpp-python`](https://github.com/abetlen/llama-cpp-python)** project. The original repository has been largely inactive and unmaintained for some time, 
-and because one of my most important projects depends on this, so this fork was created to maintain the original repo and also follow a different path: **dedicated CPU and CUDA only support (no METAL, no MacOS)** for better stability and simplicity.
->
-> If you require METAL / ARM support, please refer to the original repository: **[https://github.com/abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python)** — this fork intentionally focuses on CPU and CUDA only usage.
+> Documentation is currently shared with the original project: [https://llama-cpp-python.readthedocs.io/en/latest](https://llama-cpp-python.readthedocs.io/en/latest). As the project diverges, separate documentation may be created.
 
-> [!NOTE]
-> This readme is still under development, so all documentation still refers to the original repository and module. 
-
-This package provides:
-
+**This package provides:**
 - Low-level access to C API via `ctypes` interface.
 - High-level Python API for text completion
     - OpenAI-like API
