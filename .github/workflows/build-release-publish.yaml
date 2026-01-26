@@ -300,7 +300,7 @@ jobs:
           repo_owner = os.environ['REPO_OWNER']
           repo_name = os.environ['REPO_NAME']
 
-          package_name = "llama-cpp-python"
+          package_name = "guanaco-py"
 
           # Define configurations and their corresponding release tags
           # by example: 'cu121' -> 'v{version}-cu121'
@@ -372,9 +372,9 @@ jobs:
           root_lines = [
               '<!DOCTYPE html>',
               '<html>',
-              '  <head><title>llama-cpp-python - PyPI Index</title></head>',
+              '  <head><title>guanaco-py - PyPI Index</title></head>',
               '  <body>',
-              '    <h1>🦙 llama-cpp-python Wheels</h1>',
+              '    <h1>🦙 Guanaco Wheels</h1>',
               '    <p>Pre-compiled wheels with CPU and CUDA support (hosted on GitHub Releases).</p>',
               '    <p>Note: pip may warn about no hash verification - safe as downloads are direct from GitHub.</p>',
           ]
@@ -384,9 +384,9 @@ jobs:
               root_lines.extend([
                   f'    <h2>{label}</h2>',
                   '    <p><strong>Install:</strong></p>',
-                  f'    <p><code>pip install llama-cpp-python --extra-index-url {index_url}</code></p>',
+                  f'    <p><code>pip install guanaco-py --extra-index-url {index_url}</code></p>',
                   '    <p><strong>Force wheels only:</strong></p>',
-                  f'    <p><code>pip install llama-cpp-python --only-binary=:all: --extra-index-url {index_url}</code></p>',
+                  f'    <p><code>pip install guanaco-py --only-binary=:all: --extra-index-url {index_url}</code></p>',
                   f'    <p><a href="whl/{config}/">Simple index →</a> | <a href="whl/{config}/{package_name}/">Full wheel list →</a></p>',
               ])
 
@@ -408,7 +408,7 @@ jobs:
       - name: Create README
         run: |
           cat > dist/README.md << 'EOF'
-          # 🦙 llama-cpp-python Wheels
+          # 🦙 Wheels
 
           Pre-compiled wheels with CPU and CUDA support.
 
