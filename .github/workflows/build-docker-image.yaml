@@ -55,7 +55,7 @@ jobs:
 
           push: true
           tags: |
-            ghcr.io/thebigeye/llama-cpp-python:latest
-            ghcr.io/thebigeye/llama-cpp-python:${{ steps.version.outputs.tag }}
+            ghcr.io/thebigeye/guanaco-py:latest
+            ghcr.io/thebigeye/guanaco-py:${{ steps.version.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
