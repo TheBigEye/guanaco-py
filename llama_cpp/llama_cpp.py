@@ -6,6 +6,7 @@ import pathlib
 
 from typing import (
     Callable,
+    List,
     Union,
     NewType,
     Optional,
@@ -544,7 +545,7 @@ llama_token_data_p = ctypes.POINTER(llama_token_data)
 #     llama_token_data * data;
 #     size_t size;
 #     int64_t selected; // this is the index in the data array (i.e. not the token id)
-#     bool sorted;
+#     bool sorted; // note: do not assume the data is sorted - always check this flag
 # } llama_token_data_array;
 class llama_token_data_array(ctypes.Structure):
     """Used to sample tokens given logits
@@ -3875,12 +3876,6 @@ def llama_sampler_init_greedy() -> llama_sampler_p: ...
 # LLAMA_API struct llama_sampler * llama_sampler_init_dist  (uint32_t seed);
 @ctypes_function("llama_sampler_init_dist", [ctypes.c_uint32], llama_sampler_p_ctypes)
 def llama_sampler_init_dist(seed: int) -> llama_sampler_p: ...
-
-
-# /// @details Sorts candidate tokens by their logits in descending order and calculate probabilities based on logits.
-# /// NOTE: Avoid using on the full vocabulary as the sorting can become slow. For example, apply top-k or top-p sampling first.
-# DEPRECATED(LLAMA_API struct llama_sampler * llama_sampler_init_softmax    (void),
-#     "will be removed in the future (see https://github.com/ggml-org/llama.cpp/pull/9896#discussion_r1800920915)");
 
 
 # /// @details Top-K sampling described in academic paper "The Curious Case of Neural Text Degeneration" https://arxiv.org/abs/1904.09751

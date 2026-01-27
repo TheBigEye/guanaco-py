@@ -386,11 +386,6 @@ class LlamaContext:
             "sample_repetition_penalties is deprecated, use LlamaSampler instead"
         )
 
-    def sample_softmax(self, candidates: "_LlamaTokenDataArray"):
-        raise NotImplementedError(
-            "sample_softmax is deprecated, use LlamaSampler instead"
-        )
-
     def sample_top_k(self, candidates: "_LlamaTokenDataArray", k: int, min_keep: int):
         raise NotImplementedError(
             "sample_top_k is deprecated, use LlamaSampler instead"
@@ -548,6 +543,7 @@ class LlamaTokenDataArray:
         self.candidates = llama_cpp.llama_token_data_array(
             data=self.candidates_data.ctypes.data_as(llama_cpp.llama_token_data_p),
             size=self.n_vocab,
+            selected=-1,
             sorted=False,
         )
         self.default_candidates_data_id = np.arange(self.n_vocab, dtype=np.intc)  # type: ignore
@@ -641,10 +637,87 @@ class LlamaSamplingContext:
         idx: int = 0,
         logits_array: Optional[npt.NDArray[np.single]] = None,
     ):
-        # This method is deprecated in favor of using LlamaSampler directly
-        raise NotImplementedError(
-            "LlamaSamplingContext.sample is deprecated, use LlamaSampler instead"
-        )
+        n_vocab = ctx_main.model.n_vocab()
+        id: int = 0
+
+        if logits_array is None:
+            logits = ctx_main.get_logits_ith(idx)
+            logits_array = np.array(
+                ctypes.cast(logits, ctypes.POINTER(ctypes.c_float * n_vocab)).contents,
+                dtype=np.single,
+            )
+
+        # apply logit_bias
+        for token, logit_bias in self.params.logit_bias.items():
+            logits_array[token] += logit_bias
+
+        token_data_array = LlamaTokenDataArray(
+            n_vocab=n_vocab
+        )  # TODO: Only create this once
+        token_data_array.copy_logits(logits_array)
+
+        # apply penalties
+        if len(self.prev) > 0:
+            nl_token = ctx_main.model.token_nl()
+            nl_logit = logits_array[nl_token]
+            last_tokens = self.prev[-self.params.penalty_last_n :]
+            last_tokens_size = min(len(last_tokens), self.params.penalty_last_n)
+            if last_tokens_size > 0:
+                last_tokens_p = (llama_cpp.llama_token * len(last_tokens))(*last_tokens)
+                ctx_main.sample_repetition_penalties(
+                    token_data_array,
+                    last_tokens_p,
+                    last_tokens_size,
+                    self.params.penalty_repeat,
+                    self.params.penalty_freq,
+                    self.params.penalty_present,
+                )
+            if not self.params.penalize_nl:
+                token_data_array.candidates_data.logit[nl_token] = nl_logit
+
+        if self.grammar is not None:
+            ctx_main.sample_grammar(token_data_array, self.grammar)
+
+        if self.params.temp < 0:
+            id = token_data_array.candidates_data.id[0]
+        elif self.params.temp == 0:
+            id = ctx_main.sample_token_greedy(token_data_array)
+        else:
+            if self.params.mirostat == 1:
+                mirostat_m = 100
+                ctx_main.sample_temp(token_data_array, self.params.temp)
+                id = ctx_main.sample_token_mirostat(
+                    token_data_array,
+                    self.params.mirostat_tau,
+                    self.params.mirostat_eta,
+                    mirostat_m,
+                    ctypes.pointer(self.mirostat_mu),
+                )
+            elif self.params.mirostat == 2:
+                ctx_main.sample_temp(token_data_array, self.params.temp)
+                id = ctx_main.sample_token_mirostat_v2(
+                    token_data_array,
+                    self.params.mirostat_tau,
+                    self.params.mirostat_eta,
+                    ctypes.pointer(self.mirostat_mu),
+                )
+            else:
+                min_keep = max(1, self.params.n_probs)
+                ctx_main.sample_top_k(
+                    token_data_array, self.params.top_k, min_keep=min_keep
+                )
+                ctx_main.sample_typical(
+                    token_data_array, self.params.typical_p, min_keep=min_keep
+                )
+                ctx_main.sample_top_p(
+                    token_data_array, self.params.top_p, min_keep=min_keep
+                )
+                ctx_main.sample_min_p(
+                    token_data_array, self.params.min_p, min_keep=min_keep
+                )
+                ctx_main.sample_temp(token_data_array, self.params.temp)
+                id = ctx_main.sample_token(token_data_array)
+        return id
 
     def accept(self, ctx_main: LlamaContext, id: int, apply_grammar: bool):
         self.prev.append(id)
@@ -711,10 +784,6 @@ class LlamaSampler:
 
     def add_dist(self, seed: int):
         sampler = llama_cpp.llama_sampler_init_dist(seed)
-        llama_cpp.llama_sampler_chain_add(self.sampler, sampler)
-
-    def add_softmax(self):
-        sampler = llama_cpp.llama_sampler_init_softmax()
         llama_cpp.llama_sampler_chain_add(self.sampler, sampler)
 
     def add_top_k(self, k: int):
