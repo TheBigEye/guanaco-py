@@ -30,29 +30,38 @@ build.debug.extra:
 		--config-settings=cmake.args="-DCMAKE_BUILD_TYPE=Debug;-DCMAKE_C_FLAGS='-fsanitize=address -ggdb -O0';-DCMAKE_CXX_FLAGS='-fsanitize=address -ggdb -O0'" \
 		--editable .
 
-build.cuda:
-	CMAKE_ARGS="-DGGML_CUDA=on" python3 -m pip install --verbose -e .
-
-build.openblas:
-	CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" python3 -m pip install --verbose -e .
-
 build.blis:
 	CMAKE_ARGS="-DGGML_BLAS=on -DGGML_BLAS_VENDOR=FLAME" python3 -m pip install --verbose -e .
+
+build.cann:
+	CMAKE_ARGS="-DGGML_CANN=on -DCMAKE_BUILD_TYPE=release" python3 -m pip install --verbose -e .
+
+build.cuda:
+	CMAKE_ARGS="-DGGML_CUDA=on" python3 -m pip install --verbose -e .
 
 build.metal:
 	CMAKE_ARGS="-DGGML_METAL=on" python3 -m pip install --verbose -e .
 
-build.vulkan:
-	CMAKE_ARGS="-DGGML_VULKAN=on" python3 -m pip install --verbose -e .
+build.musa:
+	CMAKE_ARGS="-DGGML_MUSA=ON" python3 -m pip install --verbose -e .
 
-build.kompute:
-	CMAKE_ARGS="-DGGML_KOMPUTE=on" python3 -m pip install --verbose -e .
+build.openblas:
+	CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" python3 -m pip install --verbose -e .
+
+build.rpc:
+	CMAKE_ARGS="-DGGML_RPC=on" python3 -m pip install --verbose -e .
 
 build.sycl:
 	CMAKE_ARGS="-DGGML_SYCL=on" python3 -m pip install --verbose -e .
 
-build.rpc:
-	CMAKE_ARGS="-DGGML_RPC=on" python3 -m pip install --verbose -e .
+build.vulkan:
+	CMAKE_ARGS="-DGGML_VULKAN=on" python3 -m pip install --verbose -e .
+
+build.webgpu:
+	CMAKE_ARGS="-DGGML_WEBGPU=ON" python3 -m pip install --verbose -e .
+
+build.zdnn:
+	CMAKE_ARGS="-DGGML_ZDNN=ON" python3 -m pip install --verbose -e .
 
 build.sdist:
 	python3 -m build --sdist --verbose
