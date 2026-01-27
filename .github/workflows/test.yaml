@@ -31,19 +31,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           submodules: "recursive"
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          # Use setup-python's built-in pip caching
           cache: 'pip'
 
       - name: Cache HuggingFace model
-        # Give this step an id to reference its output below
         id: model-cache
         uses: actions/cache@v4
         with:
@@ -51,11 +49,19 @@ jobs:
           key: ${{ runner.os }}-model-${{ env.REPO_ID }}-${{ env.MODEL_FILE }}
 
       - name: Download model if not cached
-        # Only run this step if the cache was not found
         if: steps.model-cache.outputs.cache-hit != 'true'
         run: |
-          pip install huggingface-hub[cli]
-          huggingface-cli download ${{ env.REPO_ID }} ${{ env.MODEL_FILE }}
+          python -m pip install --upgrade huggingface-hub
+          python - <<'PY'
+          from huggingface_hub import hf_hub_download
+          print("Downloading model ${{ env.REPO_ID }}/${{ env.MODEL_FILE }}...")
+          hf_hub_download(
+              repo_id="${{ env.REPO_ID }}",
+              filename="${{ env.MODEL_FILE }}",
+              repo_type="model"
+          )
+          print("Download complete.")
+          PY
         shell: bash
 
       - name: Install dependencies
@@ -63,10 +69,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install uv
           python -m uv pip install -e .[all] --verbose
-        # FIX: Simplified shell to bash for all OSes
         shell: bash
 
       - name: Test with pytest
         run: python -m pytest
-        # FIX: Simplified shell to bash for all OSes
         shell: bash
