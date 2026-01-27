@@ -81,6 +81,7 @@ def test_real_model(llama_cpp_model_path):
     cparams.n_ubatch = 16
     cparams.n_threads = multiprocessing.cpu_count()
     cparams.n_threads_batch = multiprocessing.cpu_count()
+    cparams.flash_attn = True
     cparams.logits_all = False
     cparams.flash_attn_type = llama_cpp.LLAMA_FLASH_ATTN_TYPE_ENABLED
 
