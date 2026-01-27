@@ -201,8 +201,10 @@ llama_seq_id = ctypes.c_int32
 # typedef uint32_t llama_state_seq_flags;
 llama_state_seq_flags = ctypes.c_uint32
 
-# State sequence flags
+# State sequence flags, for backwards-compat
 LLAMA_STATE_SEQ_FLAGS_SWA_ONLY = 1
+
+# // work only with partial states, such as SWA KV cache or recurrent cache (e.g. Mamba)
 LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY = 2
 
 
@@ -234,46 +236,47 @@ LLAMA_VOCAB_TYPE_PLAMO2 = 6
 # NOTE: Deprecated and will be removed in the future. (already gone in llama.cpp)
 # // pre-tokenization types
 # enum llama_vocab_pre_type {
-#     LLAMA_VOCAB_PRE_TYPE_DEFAULT        = 0,
-#     LLAMA_VOCAB_PRE_TYPE_LLAMA3         = 1,
-#     LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_LLM   = 2,
-#     LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_CODER = 3,
-#     LLAMA_VOCAB_PRE_TYPE_FALCON         = 4,
-#     LLAMA_VOCAB_PRE_TYPE_MPT            = 5,
-#     LLAMA_VOCAB_PRE_TYPE_STARCODER      = 6,
-#     LLAMA_VOCAB_PRE_TYPE_GPT2           = 7,
-#     LLAMA_VOCAB_PRE_TYPE_REFACT         = 8,
-#     LLAMA_VOCAB_PRE_TYPE_COMMAND_R      = 9,
-#     LLAMA_VOCAB_PRE_TYPE_STABLELM2      = 10,
-#     LLAMA_VOCAB_PRE_TYPE_QWEN2          = 11,
-#     LLAMA_VOCAB_PRE_TYPE_OLMO           = 12,
-#     LLAMA_VOCAB_PRE_TYPE_DBRX           = 13,
-#     LLAMA_VOCAB_PRE_TYPE_SMAUG          = 14,
-#     LLAMA_VOCAB_PRE_TYPE_PORO           = 15,
-#     LLAMA_VOCAB_PRE_TYPE_CHATGLM3       = 16,
-#     LLAMA_VOCAB_PRE_TYPE_CHATGLM4       = 17,
-#     LLAMA_VOCAB_PRE_TYPE_VIKING         = 18,
-#     LLAMA_VOCAB_PRE_TYPE_JAIS           = 19,
-#     LLAMA_VOCAB_PRE_TYPE_TEKKEN         = 20,
-#     LLAMA_VOCAB_PRE_TYPE_SMOLLM         = 21,
-#     LLAMA_VOCAB_PRE_TYPE_CODESHELL      = 22,
-#     LLAMA_VOCAB_PRE_TYPE_BLOOM          = 23,
-#     LLAMA_VOCAB_PRE_TYPE_GPT3_FINNISH   = 24,
-#     LLAMA_VOCAB_PRE_TYPE_EXAONE         = 25,
-#     LLAMA_VOCAB_PRE_TYPE_CHAMELEON      = 26,
-#     LLAMA_VOCAB_PRE_TYPE_MINERVA        = 27,
-#     LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM  = 28,
-#     LLAMA_VOCAB_PRE_TYPE_GPT4O          = 29,
-#     LLAMA_VOCAB_PRE_TYPE_SUPERBPE       = 30,
-#     LLAMA_VOCAB_PRE_TYPE_TRILLION       = 31,
-#     LLAMA_VOCAB_PRE_TYPE_BAILINGMOE     = 32,
-#     LLAMA_VOCAB_PRE_TYPE_LLAMA4         = 33,
-#     LLAMA_VOCAB_PRE_TYPE_PIXTRAL        = 34,
-#     LLAMA_VOCAB_PRE_TYPE_SEED_CODER     = 35,
-#     LLAMA_VOCAB_PRE_TYPE_HUNYUAN        = 36,
-#     LLAMA_VOCAB_PRE_TYPE_KIMI_K2        = 37,
-#     LLAMA_VOCAB_PRE_TYPE_HUNYUAN_DENSE  = 38,
-#     LLAMA_VOCAB_PRE_TYPE_GROK_2         = 39,
+#     LLAMA_VOCAB_PRE_TYPE_DEFAULT         = 0,
+#     LLAMA_VOCAB_PRE_TYPE_LLAMA3          = 1,
+#     LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_LLM    = 2,
+#     LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_CODER  = 3,
+#     LLAMA_VOCAB_PRE_TYPE_FALCON          = 4,
+#     LLAMA_VOCAB_PRE_TYPE_MPT             = 5,
+#     LLAMA_VOCAB_PRE_TYPE_STARCODER       = 6,
+#     LLAMA_VOCAB_PRE_TYPE_GPT2            = 7,
+#     LLAMA_VOCAB_PRE_TYPE_REFACT          = 8,
+#     LLAMA_VOCAB_PRE_TYPE_COMMAND_R       = 9,
+#     LLAMA_VOCAB_PRE_TYPE_STABLELM2       = 10,
+#     LLAMA_VOCAB_PRE_TYPE_QWEN2           = 11,
+#     LLAMA_VOCAB_PRE_TYPE_OLMO            = 12,
+#     LLAMA_VOCAB_PRE_TYPE_DBRX            = 13,
+#     LLAMA_VOCAB_PRE_TYPE_SMAUG           = 14,
+#     LLAMA_VOCAB_PRE_TYPE_PORO            = 15,
+#     LLAMA_VOCAB_PRE_TYPE_CHATGLM3        = 16,
+#     LLAMA_VOCAB_PRE_TYPE_CHATGLM4        = 17,
+#     LLAMA_VOCAB_PRE_TYPE_VIKING          = 18,
+#     LLAMA_VOCAB_PRE_TYPE_JAIS            = 19,
+#     LLAMA_VOCAB_PRE_TYPE_TEKKEN          = 20,
+#     LLAMA_VOCAB_PRE_TYPE_SMOLLM          = 21,
+#     LLAMA_VOCAB_PRE_TYPE_CODESHELL       = 22,
+#     LLAMA_VOCAB_PRE_TYPE_BLOOM           = 23,
+#     LLAMA_VOCAB_PRE_TYPE_GPT3_FINNISH    = 24,
+#     LLAMA_VOCAB_PRE_TYPE_EXAONE          = 25,
+#     LLAMA_VOCAB_PRE_TYPE_CHAMELEON       = 26,
+#     LLAMA_VOCAB_PRE_TYPE_MINERVA         = 27,
+#     LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM   = 28,
+#     LLAMA_VOCAB_PRE_TYPE_GPT4O           = 29,
+#     LLAMA_VOCAB_PRE_TYPE_SUPERBPE        = 30,
+#     LLAMA_VOCAB_PRE_TYPE_TRILLION        = 31,
+#     LLAMA_VOCAB_PRE_TYPE_BAILINGMOE      = 32,
+#     LLAMA_VOCAB_PRE_TYPE_LLAMA4          = 33,
+#     LLAMA_VOCAB_PRE_TYPE_PIXTRAL         = 34,
+#     LLAMA_VOCAB_PRE_TYPE_SEED_CODER      = 35,
+#     LLAMA_VOCAB_PRE_TYPE_HUNYUAN         = 36,
+#     LLAMA_VOCAB_PRE_TYPE_KIMI_K2         = 37,
+#     LLAMA_VOCAB_PRE_TYPE_HUNYUAN_DENSE   = 38,
+#     LLAMA_VOCAB_PRE_TYPE_GROK_2          = 39,
+#     LLAMA_VOCAB_PRE_TYPE_GRANITE_DOCLING = 40,
 # };
 LLAMA_VOCAB_PRE_TYPE_DEFAULT = 0
 LLAMA_VOCAB_PRE_TYPE_LLAMA3 = 1
@@ -315,6 +318,7 @@ LLAMA_VOCAB_PRE_TYPE_HUNYUAN  = 36
 LLAMA_VOCAB_PRE_TYPE_KIMI_K2  = 37
 LLAMA_VOCAB_PRE_TYPE_HUNYUAN_DENSE = 38
 LLAMA_VOCAB_PRE_TYPE_GROK_2 = 39
+LLAMA_VOCAB_PRE_TYPE_GRANITE_DOCLING = 40
 
 
 # // note: these values should be synchronized with ggml_rope
@@ -1787,6 +1791,7 @@ def llama_model_decoder_start_token(model: llama_model_p, /) -> int:
 def llama_model_is_recurrent(model: llama_model_p, /) -> bool:
     """Returns true if the model is recurrent (like Mamba, RWKV, etc.)"""
     ...
+
 
 
 # LLAMA_API bool llama_model_is_hybrid(const struct llama_model * model);
