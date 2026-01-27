@@ -4314,15 +4314,15 @@ def llama_memory_breakdown_print(ctx: llama_context_p, /):
 # //
 
 # struct llama_perf_context_data {
-#     double t_start_ms;
-#     double t_load_ms;
-#     double t_p_eval_ms;
-#     double t_eval_ms;
+#     // ms == milliseconds
+#     double t_start_ms;  // absolute start time
+#     double t_load_ms;   // time needed for loading the model
+#     double t_p_eval_ms; // time needed for processing the prompt
+#     double t_eval_ms;   // time needed for generating tokens
 
-
-#     int32_t n_p_eval;
-#     int32_t n_eval;
-#     int32_t n_reused; // number of times a ggml compute graph had been reused
+#     int32_t n_p_eval;   // number of prompt tokens
+#     int32_t n_eval;     // number of generated tokens
+#     int32_t n_reused;   // number of times a ggml compute graph had been reused
 # };
 class llama_perf_context_data(ctypes.Structure):
     _fields_ = [
@@ -4337,10 +4337,8 @@ class llama_perf_context_data(ctypes.Structure):
 
 
 # struct llama_perf_sampler_data {
-#     double t_sample_ms;
-
-
-#     int32_t n_sample;
+#     double t_sample_ms; // time needed for sampling in ms
+#     int32_t n_sample;   // number of sampled tokens
 # };
 class llama_perf_sampler_data(ctypes.Structure):
     _fields_ = [
@@ -4402,6 +4400,17 @@ def llama_perf_sampler_print(chain: llama_sampler_p, /): ...
     None,
 )
 def llama_perf_sampler_reset(chain: llama_sampler_p, /): ...
+
+
+# // print a breakdown of per-device memory use via LLAMA_LOG:
+# LLAMA_API void llama_memory_breakdown_print(const struct llama_context * ctx);
+@ctypes_function(
+    "llama_memory_breakdown_print",
+    [llama_context_p_ctypes],
+    None,
+)
+def llama_memory_breakdown_print(ctx: llama_context_p, /): ...
+
 
 
 # //
