@@ -9,83 +9,122 @@ permissions:
 jobs:
   build_linux:
     runs-on: ubuntu-latest
-    container:
-      image: nvidia/cuda:${{ matrix.cuda_config.ver }}-devel-ubuntu22.04
-    defaults:
-      run:
-        shell: bash
     strategy:
       fail-fast: false
       matrix:
-        pyver: ["3.9", "3.10", "3.11", "3.12", "3.13"]
-        cuda_config:
-          - ver: 12.1.1
+        include:
+          - pyver: "3.9"
+            cuda: "12.1.1"
             short: cu121
             arch: 75;80;86;89;90
-          - ver: 12.2.2
+          - pyver: "3.10"
+            cuda: "12.1.1"
+            short: cu121
+            arch: 75;80;86;89;90
+          - pyver: "3.11"
+            cuda: "12.1.1"
+            short: cu121
+            arch: 75;80;86;89;90
+          - pyver: "3.12"
+            cuda: "12.1.1"
+            short: cu121
+            arch: 75;80;86;89;90
+          - pyver: "3.9"
+            cuda: "12.2.2"
             short: cu122
             arch: 75;80;86;89;90
-          - ver: 12.3.2
+          - pyver: "3.10"
+            cuda: "12.2.2"
+            short: cu122
+            arch: 75;80;86;89;90
+          - pyver: "3.11"
+            cuda: "12.2.2"
+            short: cu122
+            arch: 75;80;86;89;90
+          - pyver: "3.12"
+            cuda: "12.2.2"
+            short: cu122
+            arch: 75;80;86;89;90
+          - pyver: "3.9"
+            cuda: "12.3.2"
             short: cu123
             arch: 75;80;86;89;90
-          - ver: 12.4.1
+          - pyver: "3.10"
+            cuda: "12.3.2"
+            short: cu123
+            arch: 75;80;86;89;90
+          - pyver: "3.11"
+            cuda: "12.3.2"
+            short: cu123
+            arch: 75;80;86;89;90
+          - pyver: "3.12"
+            cuda: "12.3.2"
+            short: cu123
+            arch: 75;80;86;89;90
+          - pyver: "3.9"
+            cuda: "12.4.1"
             short: cu124
             arch: 75;80;86;89;90
-          - ver: 12.6.3
-            short: cu126
-            arch: 75;80;86;89;90;100
-          - ver: 12.8.1
-            short: cu128
-            arch: 75;80;86;89;90;100
-    name: Linux CUDA ${{ matrix.cuda_config.ver }} Py ${{ matrix.pyver }}
+          - pyver: "3.10"
+            cuda: "12.4.1"
+            short: cu124
+            arch: 75;80;86;89;90
+          - pyver: "3.11"
+            cuda: "12.4.1"
+            short: cu124
+            arch: 75;80;86;89;90
+          - pyver: "3.12"
+            cuda: "12.4.1"
+            short: cu124
+            arch: 75;80;86;89;90
+    name: Linux CUDA ${{ matrix.cuda }} Py ${{ matrix.pyver }}
     env:
-      CUDAVER: ${{ matrix.cuda_config.ver }}
-      PYVER_FULL: ${{ matrix.pyver }}
+      CUDAVER: ${{ matrix.cuda }}
 
     steps:
-      - name: Install system dependencies and deadsnakes PPA
-        run: |
-          apt update
-          apt install -y software-properties-common
-          add-apt-repository ppa:deadsnakes/ppa -y
-          apt update
-          apt install -y build-essential cmake git libssl-dev curl \
-                         python${{ matrix.pyver }} python${{ matrix.pyver }}-venv python${{ matrix.pyver }}-dev python${{ matrix.pyver }}-distutils
-
-      - name: Set up Python symlink and pip
-        run: |
-          update-alternatives --install /usr/bin/python python /usr/bin/python${{ matrix.pyver }} 1
-          update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${{ matrix.pyver }} 1
-          curl https://bootstrap.pypa.io/get-pip.py | python -
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install uv
-        run: |
-          python -m pip install --upgrade uv
+      - name: Setup uv and Python
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.pyver }}
+          enable-cache: true
 
-      - name: Verify environment
-        run: |
-          python --version
-          uv --version
-          which python
-          nvcc --version
+      - name: Setup Miniconda and Mamba
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: llamacpp
+          python-version: ${{ matrix.pyver }}
+          miniforge-version: latest
+          auto-activate-base: false
 
-      - name: Install build dependencies
+      - name: Install CUDA toolkit via Mamba
+        shell: bash -l {0}
         run: |
-          uv pip install build wheel setuptools packaging
+          mamba install -y -c nvidia/label/cuda-${{ matrix.cuda }} cuda
+
+      - name: Install build tools
+        shell: bash -l {0}
+        run: |
+          uv pip install build wheel cmake setuptools packaging
+          uv pip install --upgrade cmake
 
       - name: Build wheel
+        shell: bash -l {0}
         env:
           VERBOSE: 1
           CMAKE_ARGS: >-
             -DGGML_CUDA=on
-            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda_config.arch }}
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.arch }}
             -DGGML_CUDA_FORCE_MMQ=OFF
             -DGGML_AVX=off -DGGML_AVX2=off -DGGML_FMA=off -DGGML_F16C=off
+          CUDA_PATH: ${{ steps.conda.outputs.conda-prefix }}
+          CUDA_HOME: ${{ steps.conda.outputs.conda-prefix }}
+          CUDA_TOOLKIT_ROOT_DIR: ${{ steps.conda.outputs.conda-prefix }}
+          LD_LIBRARY_PATH: ${{ steps.conda.outputs.conda-prefix }}/lib:${{ env.LD_LIBRARY_PATH }}
         run: |
           python -m build --wheel
 
@@ -95,36 +134,34 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-cuda-${{ matrix.pyver }}-${{ matrix.cuda_config.short }}
+          name: wheel-cuda-${{ matrix.pyver }}-${{ matrix.short }}
           path: dist/*.whl
 
   build_windows:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
     strategy:
       fail-fast: false
       matrix:
-        pyver: ["3.9", "3.10", "3.11", "3.12", "3.13"]
-        cuda_config:
-          - ver: 12.4.1
+        include:
+          - pyver: "3.9"
+            cuda: "12.4.1"
             short: cu124
             arch: 75;80;86;89;90
-          - ver: 12.6.3
-            short: cu126
-            arch: 75;80;86;89;90;100
-          - ver: 12.8.1
-            short: cu128
-            arch: 75;80;86;89;90;100
-    name: Windows CUDA ${{ matrix.cuda_config.ver }} Py ${{ matrix.pyver }}
-    env:
-      CUDAVER: ${{ matrix.cuda_config.ver }}
-
+          - pyver: "3.10"
+            cuda: "12.4.1"
+            short: cu124
+            arch: 75;80;86;89;90
+          - pyver: "3.11"
+            cuda: "12.4.1"
+            short: cu124
+            arch: 75;80;86;89;90
+          - pyver: "3.12"
+            cuda: "12.4.1"
+            short: cu124
+            arch: 75;80;86;89;90
+          # Agregá más versiones nuevas aquí (12.6, 12.8) fácilmente
+    name: Windows CUDA ${{ matrix.cuda }} Py ${{ matrix.pyver }}
     steps:
-      - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@v2
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -133,7 +170,7 @@ jobs:
       - name: Install CUDA toolkit
         uses: N-Storm/cuda-toolkit@v0.2.29
         with:
-          cuda: ${{ matrix.cuda_config.ver }}
+          cuda: ${{ matrix.cuda }}
           use-github-cache: true
 
       - name: Setup uv and Python
@@ -145,17 +182,18 @@ jobs:
       - name: Enable long paths
         run: git config --system core.longpaths true
 
+      - name: Install build tools
+        run: uv pip install build wheel cmake setuptools packaging
+
       - name: Build wheel
         env:
           VERBOSE: 1
           CMAKE_ARGS: >-
             -DGGML_CUDA=on
-            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda_config.arch }}
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.arch }}
             -DGGML_CUDA_FORCE_MMQ=OFF
             -DGGML_AVX=off -DGGML_AVX2=off -DGGML_FMA=off -DGGML_F16C=off
-        run: |
-          uv pip install build wheel setuptools packaging
-          python -m build --wheel
+        run: python -m build --wheel
 
       - name: List wheels
         run: Get-ChildItem dist/*.whl
@@ -163,5 +201,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-cuda-${{ matrix.pyver }}-${{ matrix.cuda_config.short }}-win
+          name: wheel-cuda-${{ matrix.pyver }}-${{ matrix.short }}-win
           path: dist/*.whl
