@@ -50,13 +50,13 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux
-            python-version: "3.13"
+            python-version: "3.9"
             cibw_build: cp39-manylinux_x86_64 cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64
             cibw_skip: "*-musllinux_*"
             cibw_image: manylinux_2_28
           - os: windows-latest
             platform: windows
-            python-version: "3.13"
+            python-version: "3.9"
             cibw_build: cp39-win_amd64 cp310-win_amd64 cp311-win_amd64 cp312-win_amd64 cp313-win_amd64
             cibw_skip: ""
             cibw_image: ""
