@@ -120,6 +120,37 @@ jobs:
           submodules: recursive
 
       - name: Install CUDA toolkit
-        uses: N-Storm/cuda-toolkit@v0.2.29  # versión más reciente al momento
+        uses: N-Storm/cuda-toolkit@v0.2.29
         with:
-          cuda: ${{ matrix.cuda
+          cuda: ${{ matrix.cuda_config.ver }}
+          use-github-cache: true
+
+      - name: Setup uv and Python
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.pyver }}
+          enable-cache: true
+
+      - name: Enable long paths
+        run: git config --system core.longpaths true
+
+      - name: Build wheel
+        env:
+          VERBOSE: 1
+          CMAKE_ARGS: >-
+            -DGGML_CUDA=on
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda_config.arch }}
+            -DGGML_CUDA_FORCE_MMQ=OFF
+            -DGGML_AVX=off -DGGML_AVX2=off -DGGML_FMA=off -DGGML_F16C=off
+        run: |
+          uv pip install --system build wheel setuptools packaging
+          python -m build --wheel
+
+      - name: List wheels
+        run: Get-ChildItem dist/*.whl
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-cuda-${{ matrix.pyver }}-${{ matrix.cuda_config.short }}-win
+          path: dist/*.whl
