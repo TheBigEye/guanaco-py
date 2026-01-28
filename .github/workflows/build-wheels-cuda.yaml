@@ -60,7 +60,6 @@ jobs:
       - name: Verify CUDA
         run: |
           nvcc --version
-          nvidia-smi
 
       - name: Build wheel
         env:
