@@ -41,14 +41,20 @@ jobs:
           apt update && apt install -y software-properties-common git curl build-essential cmake libssl-dev
           add-apt-repository ppa:deadsnakes/ppa -y
           apt update
-          apt install -y python${{ matrix.pyver }} python${{ matrix.pyver }}-dev
+          apt install -y python${{ matrix.pyver }} python${{ matrix.pyver }}-dev python${{ matrix.pyver }}-venv
 
       - name: Set Python symlink and install pip + uv
         run: |
           update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${{ matrix.pyver }} 1
           update-alternatives --install /usr/bin/python python /usr/bin/python${{ matrix.pyver }} 1
-          python -m ensurepip --upgrade
-          python -m pip install --upgrade pip uv
+
+          if [[ "${{ matrix.pyver }}" < "3.12" || "${{ matrix.pyver }}" == "3.11" ]]; then
+            python -m ensurepip --upgrade
+          else
+            curl https://bootstrap.pypa.io/get-pip.py | python --
+          fi
+
+          python -m pip install --upgrade uv
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -109,7 +115,6 @@ jobs:
             cuda: "12.4.1"
             short: cu124
             arch: 75;80;86;89;90
-          # Agregá más versiones nuevas aquí (12.6, 12.8) fácilmente
     name: Windows CUDA ${{ matrix.cuda }} Py ${{ matrix.pyver }}
     steps:
       - name: Checkout repository
