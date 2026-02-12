@@ -21,7 +21,7 @@ from typing_extensions import TypeAlias
 
 # Load the library
 def load_shared_library(lib_base_name: str, base_path: pathlib.Path):
-    """Platform independent shared library loader"""
+    """ Platform independent shared library loader """
     # Searching for the library in the current directory under the name "libllama" (default name
     # for llamacpp) and "llama" (default name for this repo)
     lib_paths: List[pathlib.Path] = []
