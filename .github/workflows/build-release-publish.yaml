@@ -102,7 +102,7 @@ jobs:
         run: Get-ChildItem wheelhouse/*.whl | Format-Table -AutoSize Name, Length, LastWriteTime
 
       - name: Upload wheels as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-cpu-${{ matrix.platform }}
           path: wheelhouse/*.whl
@@ -192,7 +192,7 @@ jobs:
         run: ls -lh dist/*.whl
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-cuda-${{ matrix.pyver }}-${{ matrix.cuda_config.short }}
           path: dist/*.whl
