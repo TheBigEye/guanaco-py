@@ -29,7 +29,7 @@ class GptParams:
     repeat_penalty: float = 1.10
     repeat_last_n: int = 64
     frequency_penalty: float = 0.0
-    presence_penalty: float = 0.0
+    present_penalty: float = 0.0
     mirostat: int = 0
     mirostat_tau: float = 5.0
     mirostat_eta: float = 0.1
@@ -59,7 +59,6 @@ class GptParams:
     interactive_start: bool = False
 
     instruct: bool = False
-    penalize_nl: bool = True
     perplexity: bool = False
     use_mmap: bool = True
     use_direct_io: bool = False
@@ -185,11 +184,11 @@ def gpt_params_parse(argv=None):
         dest="frequency_penalty",
     )
     parser.add_argument(
-        "--presence_penalty",
+        "--present_penalty",
         type=float,
         default=0.0,
-        help="repeat alpha presence penalty (0.0 = disabled)",
-        dest="presence_penalty",
+        help="repeat alpha present penalty (0.0 = disabled)",
+        dest="present_penalty",
     )
     parser.add_argument(
         "--mirostat",
@@ -361,12 +360,6 @@ def gpt_params_parse(argv=None):
         action="store_true",
         help="run in instruction mode (use with Alpaca or Vicuna models)",
         dest="instruct",
-    )
-    parser.add_argument(
-        "--no-penalize-nl",
-        action="store_false",
-        help="do not penalize newline token",
-        dest="penalize_nl",
     )
     parser.add_argument(
         "--perplexity",

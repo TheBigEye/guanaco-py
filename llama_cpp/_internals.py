@@ -1,16 +1,23 @@
 from __future__ import annotations
 
-import os
 import ctypes
+import enum
+import os
 
 from typing import (
+    Callable,
     Dict,
     List,
+    Set,
     Tuple,
     Optional,
     Sequence,
+    Union,
+    TYPE_CHECKING
 )
+
 from dataclasses import dataclass, field
+from collections import deque
 from contextlib import ExitStack
 
 import numpy as np
@@ -22,6 +29,11 @@ from ._utils import suppress_stdout_stderr
 
 import llama_cpp.llama_cpp as llama_cpp
 
+if TYPE_CHECKING:
+    from llama_cpp._ctypes_extensions import (
+        CtypesArray,
+        CtypesPointer,
+    )
 
 # Python wrappers over llama.h structs
 
@@ -63,16 +75,19 @@ class LlamaModel:
         self.model = model
         self.vocab = vocab
 
-        def free_model():
-            if self.model is None:
-                return
-            llama_cpp.llama_model_free(self.model)
-            self.model = None
-
-        self._exit_stack.callback(free_model)
-
     def close(self):
-        self._exit_stack.close()
+        """Manually free LlamaModel and Vocab resources."""
+        if getattr(self, "model", None) is not None:
+            try:
+                llama_cpp.llama_model_free(self.model)
+            except Exception:
+                pass
+            self.model = None
+        self.vocab = None
+
+        if getattr(self, "_exit_stack", None) is not None and hasattr(self._exit_stack, "close"):
+            self._exit_stack.close()
+            self._exit_stack = None
 
     def __del__(self):
         self.close()
@@ -365,16 +380,19 @@ class LlamaContext:
 
         self.ctx = ctx
 
-        def free_ctx():
-            if self.ctx is None:
-                return
-            llama_cpp.llama_free(self.ctx)
-            self.ctx = None
-
-        self._exit_stack.callback(free_ctx)
-
     def close(self):
-        self._exit_stack.close()
+        """Manually free LlamaContext resources."""
+        if getattr(self, "ctx", None) is not None:
+            try:
+                llama_cpp.llama_free(self.ctx)
+            except Exception:
+                pass
+            self.ctx = None
+        self.params = None
+
+        if getattr(self, "_exit_stack", None) is not None and hasattr(self._exit_stack, "close"):
+            self._exit_stack.close()
+            self._exit_stack = None
 
     def __del__(self):
         self.close()
@@ -429,6 +447,9 @@ class LlamaContext:
     def memory_seq_pos_min(self, seq_id: int) -> int:
         return llama_cpp.llama_memory_seq_pos_min(self.get_memory(), seq_id)
 
+    def memory_can_shift(self) -> bool:
+        return llama_cpp.llama_memory_can_shift(self.get_memory())
+
     # // State / sessions API
 
     def get_state_size(self) -> int:
@@ -445,7 +466,7 @@ class LlamaContext:
         path_session: bytes,
         tokens_out: ctypes.Array[llama_cpp.llama_token],
         n_token_capacity: ctypes.c_size_t,
-        n_token_count_out: ctypes.pointer(ctypes.c_size_t)
+        n_token_count_out: CtypesPointer[ctypes.c_size_t]
     ) -> bool:
         return llama_cpp.llama_state_load_file(self.ctx, path_session, tokens_out, n_token_capacity, n_token_count_out)
 
@@ -472,7 +493,7 @@ class LlamaContext:
         dest_seq_id: int,
         tokens_out: ctypes.Array[llama_cpp.llama_token],
         n_token_capacity: ctypes.c_size_t,
-        n_token_count_out: ctypes.pointer(ctypes.c_size_t)
+        n_token_count_out: CtypesPointer[ctypes.c_size_t]
     ) -> int:
         return llama_cpp.llama_state_seq_load_file(self.ctx, filepath, dest_seq_id, tokens_out, n_token_capacity, n_token_count_out)
 
@@ -516,19 +537,43 @@ class LlamaContext:
         if return_code != 0:
             raise RuntimeError(f"llama_encode returned {return_code}")
 
-    def decode(self, batch: LlamaBatch):
+    def decode(self, batch: 'LlamaBatch') -> int:
+        """
+        Evaluate the batch of tokens using the transformer model.
+
+        This method executes the forward pass. If the KV cache is heavily fragmented
+        or out of space, it may return 1, indicating the caller should try to reduce
+        the batch size or evict idle sequences.
+
+        Returns:
+            0: Success.
+            1: No KV slot available (Recoverable). The caller should implement a
+               fallback strategy, such as reducing the batch size and retrying.
+
+        Raises:
+            RuntimeError: If a fatal, non-recoverable error occurs during decoding
+                          (e.g., negative error codes or invalid batch structures).
+        """
         return_code = llama_cpp.llama_decode(self.ctx, batch.batch)
 
         if return_code == 0:
-            return
+            return 0
 
+        # 1 means "No KV slot available".
+        # We explicitly return 1 instead of raising an exception so that the caller
+        # can gracefully handle it via dynamic batch sizing (batch_size //= 2).
+        elif return_code == 1:
+            return 1
+
+        # Any other code indicates a fatal failure.
         error_map = {
-             1: "No KV slot available: try reducing batch size or increasing context window",
-             2: "Decoding aborted",
-            -1: "Invalid input batch",
+             2: "Decoding aborted by user callback",
+            -1: "Invalid input batch (e.g. n_tokens == 0 or exceeding capacity)",
+            -2: "Could not allocate space for the compute graph (VRAM exhausted)",
+            -3: "Graph computation failed internally",
         }
 
-        msg = error_map.get(return_code, "Fatal internal error")
+        msg = error_map.get(return_code, "Unknown fatal internal error")
         raise RuntimeError(f"llama_decode failed (code {return_code}): {msg}")
 
     def set_n_threads(self, n_threads: int, n_threads_batch: int):
@@ -567,131 +612,14 @@ class LlamaContext:
     def get_embeddings_seq(self, seq_id: int):
         return llama_cpp.llama_get_embeddings_seq(self.ctx, seq_id)
 
-    # Sampling functions
-
-    def set_rng_seed(self, seed: int):
-        # TODO: Fix
-        # llama_cpp.llama_set_rng_seed(self.ctx, seed)
-        raise NotImplementedError("set_rng_seed is not implemented in llama.cpp")
-
-    def sample_repetition_penalties(
-        self,
-        candidates: "_LlamaTokenDataArray",
-        last_tokens_data: "llama_cpp.Array[llama_cpp.llama_token]",
-        penalty_last_n: int,
-        penalty_repeat: float,
-        penalty_freq: float,
-        penalty_present: float,
-    ):
-        # llama_cpp.llama_sample_repetition_penalties(
-        #     self.ctx,
-        #     llama_cpp.byref(candidates.candidates),
-        #     last_tokens_data,
-        #     penalty_last_n,
-        #     penalty_repeat,
-        #     penalty_freq,
-        #     penalty_present,
-        # )
-        raise NotImplementedError("sample_repetition_penalties is not implemented in llama.cpp")
-
-    def sample_top_k(self, candidates: "_LlamaTokenDataArray", k: int, min_keep: int):
-        # llama_cpp.llama_sample_top_k(
-        #     self.ctx, llama_cpp.byref(candidates.candidates), k, min_keep
-        # )
-        raise NotImplementedError("sample_top_k is not implemented in llama.cpp")
-
-    def sample_top_p(self, candidates: "_LlamaTokenDataArray", p: float, min_keep: int):
-        # llama_cpp.llama_sample_top_p(
-        #     self.ctx, llama_cpp.byref(candidates.candidates), p, min_keep
-        # )
-        raise NotImplementedError("sample_top_p is not implemented in llama.cpp")
-
-    def sample_min_p(self, candidates: "_LlamaTokenDataArray", p: float, min_keep: int):
-        # llama_cpp.llama_sample_min_p(
-        #     self.ctx, llama_cpp.byref(candidates.candidates), p, min_keep
-        # )
-        raise NotImplementedError("sample_min_p is not implemented in llama.cpp")
-
-    def sample_typical(
-        self, candidates: "_LlamaTokenDataArray", p: float, min_keep: int
-    ):
-        # llama_cpp.llama_sample_typical(
-        #     self.ctx, llama_cpp.byref(candidates.candidates), p, min_keep
-        # )
-        raise NotImplementedError("sample_typical is not implemented in llama.cpp")
-
-    def sample_temp(self, candidates: "_LlamaTokenDataArray", temp: float):
-        # llama_cpp.llama_sample_temp(
-        #     self.ctx, llama_cpp.byref(candidates.candidates), temp
-        # )
-        raise NotImplementedError("sample_temp is not implemented in llama.cpp")
-
-    def sample_grammar(self, candidates: "_LlamaTokenDataArray", grammar: LlamaGrammar):
-        # llama_cpp.llama_sample_grammar(
-        #     self.ctx,
-        #     llama_cpp.byref(candidates.candidates),
-        #     grammar.grammar,
-        # )
-        raise NotImplementedError("sample_grammar is not implemented in llama.cpp")
-
-    def sample_token_mirostat(
-        self,
-        candidates: "_LlamaTokenDataArray",
-        tau: float,
-        eta: float,
-        m: int,
-        mu: llama_cpp.CtypesPointerOrRef[ctypes.c_float],
-    ) -> int:
-        raise NotImplementedError("sample_token_mirostat is not implemented in llama.cpp")
-        # return llama_cpp.llama_sample_token_mirostat(
-        #     self.ctx,
-        #     llama_cpp.byref(candidates.candidates),
-        #     tau,
-        #     eta,
-        #     m,
-        #     mu,
-        # )
-
-    def sample_token_mirostat_v2(
-        self,
-        candidates: "_LlamaTokenDataArray",
-        tau: float,
-        eta: float,
-        mu: llama_cpp.CtypesPointerOrRef[ctypes.c_float],
-    ) -> int:
-        raise NotImplementedError("sample_token_mirostat_v2 is not implemented in llama.cpp")
-        # return llama_cpp.llama_sample_token_mirostat_v2(
-        #     self.ctx,
-        #     llama_cpp.byref(candidates.candidates),
-        #     tau,
-        #     eta,
-        #     mu,
-        # )
-
-    def sample_token_greedy(self, candidates: "_LlamaTokenDataArray") -> int:
-        raise NotImplementedError("sample_token_greedy is not implemented in llama.cpp")
-        # return llama_cpp.llama_sample_token_greedy(
-        #     self.ctx,
-        #     llama_cpp.byref(candidates.candidates),
-        # )
-
-    def sample_token(self, candidates: "_LlamaTokenDataArray") -> int:
-        raise NotImplementedError("sample_token is not implemented in llama.cpp")
-        # return llama_cpp.llama_sample_token(
-        #     self.ctx,
-        #     llama_cpp.byref(candidates.candidates),
-        # )
-
-    # Grammar
-    def grammar_accept_token(self, grammar: LlamaGrammar, token: int):
-        raise NotImplementedError("grammar_accept_token is not implemented in llama.cpp")
-        # llama_cpp.llama_grammar_accept_token(grammar.grammar, self.ctx, token)
-
     def reset_timings(self):
         llama_cpp.llama_perf_context_reset(self.ctx)
 
     def print_timings(self):
         llama_cpp.llama_perf_context_print(self.ctx)
+
+    def print_memory_breakdown(self):
+        llama_cpp.llama_memory_breakdown_print(self.ctx)
 
     # Utility functions
     @staticmethod
@@ -730,17 +658,18 @@ class LlamaBatch:
 
         self.batch = batch
 
-        def free_batch():
-            if self.batch is None:
-                return
-            llama_cpp.llama_batch_free(self.batch)
+    def close(self):
+        """Manually free LlamaBatch resources."""
+        if getattr(self, "batch", None) is not None:
+            try:
+                llama_cpp.llama_batch_free(self.batch)
+            except Exception:
+                pass
             self.batch = None
 
-        self._exit_stack.callback(free_batch)
-
-    def close(self):
-        """Manually free resources."""
-        self._exit_stack.close()
+        if getattr(self, "_exit_stack", None) is not None and hasattr(self._exit_stack, "close"):
+            self._exit_stack.close()
+            self._exit_stack = None
 
     def __del__(self):
         self.close()
@@ -780,68 +709,85 @@ class LlamaBatch:
         if self.batch is not None:
             self.batch.n_tokens = 0
 
-    def set_batch(self, batch: Sequence[int], n_past: llama_cpp.llama_pos, logits_all: bool):
-        if len(batch) > self.n_tokens_capacity:
-             raise IndexError(f"Input batch size {len(batch)} exceeds capacity {self.n_tokens_capacity}")
+    def add_token(self, token: int, pos: int, seq_ids: Sequence[int], logits: bool):
+        """
+        Adds a single token to the batch.
+        This is a high-performance method for appending a single token during the generation loop,
+        avoiding the overhead of creating temporary lists required by add_sequence.
 
-        n_tokens = len(batch)
-        self.batch.n_tokens = n_tokens
-        for i in range(n_tokens):
-            self.batch.token[i] = batch[i]
-            self.batch.pos[i] = n_past + i
-            self.batch.seq_id[i][0] = 0
-            self.batch.n_seq_id[i] = 1
-            self.batch.logits[i] = logits_all
-        self.batch.logits[n_tokens - 1] = True
+        Args:
+            token: The integer ID of the token to add.
+            pos: The logical sequence position (n_past) of this token.
+            seq_ids: A sequence of sequence IDs this token belongs to (e.g., [0] for a standard single chat).
+                     A single token can be part of multiple sequences simultaneously.
+            logits: A boolean flag indicating whether the backend should compute logits for this token.
+        """
+        idx = self.batch.n_tokens
+        if idx >= self.n_tokens_capacity:
+            raise IndexError(f"LlamaBatch overflow[add_token]: Cannot add token. Capacity {self.n_tokens_capacity} reached.")
 
-    def add_sequence(self, batch: Sequence[int], seq_id: int, logits_all: bool):
-        n_tokens = len(batch)
+        self.batch.token[idx] = token
+        self.batch.pos[idx] = pos
+
+        n_seq_id = len(seq_ids)
+        if n_seq_id > self.n_seq_max:
+            raise ValueError(f"LlamaBatch Error[add_token]: Token belongs to {n_seq_id} sequences, "
+                             f"but n_seq_max was initialized to {self.n_seq_max}.")
+        self.batch.n_seq_id[idx] = n_seq_id
+
+        for i, seq_id in enumerate(seq_ids):
+            self.batch.seq_id[idx][i] = seq_id
+        self.batch.logits[idx] = logits
+
+        self.batch.n_tokens += 1
+
+    def add_sequence(
+        self,
+        token_array: Sequence[int],
+        pos_array: Sequence[int],
+        seq_ids: Sequence[Sequence[int]],
+        logits_array: Sequence[bool]
+    ):
+        """
+        Adds a sequence of tokens to the batch in a vectorized manner.
+        Strictly maps the provided arrays to the underlying C++ batch structure without subjective overriding.
+
+        Args:
+            token_array: A sequence of token IDs to be evaluated.
+            pos_array: A sequence of logical positions corresponding to each token.
+            seq_id_array: A sequence of lists, where each list contains the sequence IDs for the respective token.
+                          (e.g., [[0], [0], [0]] for 3 tokens belonging to sequence 0).
+            logits_array: A sequence of boolean flags indicating whether to compute logits for each token.
+        """
+        n_tokens = len(token_array)
         current_count = self.batch.n_tokens
+
         if current_count + n_tokens > self.n_tokens_capacity:
             raise IndexError(
-                f"LlamaBatch overflow: Cannot add {n_tokens} tokens. "
+                f"LlamaBatch overflow[add_sequence]: Cannot add {n_tokens} tokens. "
                 f"Space left: {self.n_tokens_capacity - current_count}"
             )
-        self.batch.n_tokens += n_tokens
+
+        n_seq_id = len(seq_ids)
+        if n_seq_id > self.n_seq_max:
+            raise ValueError(f"LlamaBatch Error[add_sequence]: Token belongs to {n_seq_id} sequences, "
+                             f"but n_seq_max was initialized to {self.n_seq_max}.")
+
         for i in range(n_tokens):
             j = current_count + i
-            self.batch.token[j] = batch[i]
-            self.batch.pos[j] = i
-            self.batch.seq_id[j][0] = seq_id
-            self.batch.n_seq_id[j] = 1
-            self.batch.logits[j] = logits_all
-        self.batch.logits[current_count + n_tokens - 1] = True
+            self.batch.token[j] = token_array[i]
+            self.batch.pos[j] = pos_array[i]
 
+            self.batch.n_seq_id[j] = n_seq_id
+            for k, seq_id in enumerate(seq_ids):
+                self.batch.seq_id[j][k] = seq_id
 
-class LlamaTokenDataArray:
-    def __init__(self, *, n_vocab: int):
-        self.n_vocab = n_vocab
-        self.candidates_data = np.recarray(
-            (self.n_vocab,),
-            dtype=np.dtype(
-                [("id", np.intc), ("logit", np.single), ("p", np.single)], align=True
-            ),
-        )
-        self.candidates = llama_cpp.llama_token_data_array(
-            data=self.candidates_data.ctypes.data_as(llama_cpp.llama_token_data_p),
-            size=self.n_vocab,
-            selected=-1,
-            sorted=False,
-        )
-        self.default_candidates_data_id = np.arange(self.n_vocab, dtype=np.intc)  # type: ignore
-        self.default_candidates_data_p = np.zeros(self.n_vocab, dtype=np.single)
+            self.batch.logits[j] = logits_array[i]
 
-    def copy_logits(self, logits: npt.NDArray[np.single]):
-        self.candidates_data.id[:] = self.default_candidates_data_id
-        self.candidates_data.logit[:] = logits
-        self.candidates_data.p[:] = self.default_candidates_data_p
-        self.candidates.sorted = False
-        self.candidates.size = self.n_vocab
+        self.batch.n_tokens += n_tokens
 
 
 # Embedding functions
-
-
 def normalize_embedding(embedding):
     norm = float(np.linalg.norm(embedding))
     if norm == 0.0:
@@ -849,429 +795,1000 @@ def normalize_embedding(embedding):
     return [v / norm for v in embedding]
 
 
-# Python wrappers over common/sampling structs
+class LlamaTokenDataArray:
+    """
+    Performance-optimized wrapper for llama_token_data_array.
+    This class minimizes Python overhead by caching memory views and avoiding
+    redundant memory allocations during the inference loop.
+    """
+    def __init__(self, *, n_vocab: int):
+        self.n_vocab = n_vocab
 
+        # Define the structure of llama_token_data to match the C++ memory layout.
+        # id: token identifier (int32)
+        # logit: raw prediction score (float32)
+        # p: probability score (float32)
+        self.candidates_data = np.empty(
+            self.n_vocab,
+            dtype=np.dtype(
+                [("id", np.intc), ("logit", np.single), ("p", np.single)],
+                align=True
+            ),
+        )
+
+        # Optimization: Cache field views to bypass NumPy's expensive field lookup overhead.
+        # Using these cached views allows for direct memory access in the inference loop.
+        self._id_view = self.candidates_data["id"]
+        self._logit_view = self.candidates_data["logit"]
+        self._p_view = self.candidates_data["p"]
+
+        # Initialization: Pre-generate a standard token ID sequence (0 to n_vocab - 1).
+        # This acts as the 'golden' reference to reset the buffer after sorting operations.
+        self._default_ids = np.arange(self.n_vocab, dtype=np.intc)
+        self._id_view[:] = self._default_ids
+
+        # Construct the llama_cpp C structure.
+        # 'data' is assigned a direct pointer to the underlying NumPy memory buffer.
+        self.candidates = llama_cpp.llama_token_data_array(
+            data=self.candidates_data.ctypes.data_as(llama_cpp.llama_token_data_p),
+            size=self.n_vocab,
+            selected=-1,
+            sorted=False,
+        )
+
+    def copy_logits(self, logits: npt.NDArray[np.single]):
+        """
+        Synchronizes the memory buffer with new logit data from the model.
+        """
+        # Step 1: Transfer new logits from the model output to our working buffer.
+        self._logit_view[:] = logits
+
+        # Step 2: Critical Reset.
+        # Samplers (like top-k or top-p) reorder elements in memory during processing.
+        # We must reset token IDs every step to ensure logical consistency for the next run.
+        self._id_view[:] = self._default_ids
+
+        # Step 3: Metadata update.
+        # Inform the llama.cpp backend that the buffer is full and currently unsorted.
+        self.candidates.size = self.n_vocab
+        self.candidates.sorted = False
+        self.candidates.selected = -1
+
+    def close(self):
+        """
+        Release internal NumPy buffers and C-structure references.
+        """
+        # Main structured NumPy buffer holding token data (id, logit, prob)
+        self.candidates_data = None
+
+        # Cached NumPy field views (avoid dangling references)
+        self._id_view = None
+        self._logit_view = None
+        self._p_view = None
+
+        # Precomputed default token id array
+        self._default_ids = None
+
+        # Setting to None ensures no stale pointer references remain.
+        self.candidates = None
+
+    def __del__(self):
+        # Ensures memory cleanup in case close() was not called explicitly.
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+# Python wrappers over common/sampling structs
+# common/common.h common_params_sampling
+
+# enum common_sampler_type {
+#     COMMON_SAMPLER_TYPE_NONE        = 0,
+#     COMMON_SAMPLER_TYPE_DRY         = 1,
+#     COMMON_SAMPLER_TYPE_TOP_K       = 2,
+#     COMMON_SAMPLER_TYPE_TOP_P       = 3,
+#     COMMON_SAMPLER_TYPE_MIN_P       = 4,
+#   //COMMON_SAMPLER_TYPE_TFS_Z       = 5,
+#     COMMON_SAMPLER_TYPE_TYPICAL_P   = 6,
+#     COMMON_SAMPLER_TYPE_TEMPERATURE = 7,
+#     COMMON_SAMPLER_TYPE_XTC         = 8,
+#     COMMON_SAMPLER_TYPE_INFILL      = 9,
+#     COMMON_SAMPLER_TYPE_PENALTIES   = 10,
+#     COMMON_SAMPLER_TYPE_TOP_N_SIGMA = 11,
+#     COMMON_SAMPLER_TYPE_ADAPTIVE_P  = 12,
+# };
+
+class CommonSamplerType(enum.IntEnum):
+    NONE        = 0
+    DRY         = 1
+    TOP_K       = 2
+    TOP_P       = 3
+    MIN_P       = 4
+    TYPICAL_P   = 6
+    TEMPERATURE = 7
+    XTC         = 8
+    INFILL      = 9
+    PENALTIES   = 10
+    TOP_N_SIGMA = 11
+    ADAPTIVE_P  = 12
+
+    CUSTOM      = 99
 
 @dataclass
 class LlamaSamplingParams:
-    n_prev: int = 64
-    n_probs: int = 0
-    top_k: int = 40
-    top_n_sigma: float = -1.00
-    top_p: float = 0.95
-    min_p: float = 0.05
-    typical_p: float = 1.00
-    temp: float = 0.80
-    penalty_last_n: int = 64
-    penalty_repeat: float = 1.0
-    penalty_freq: float = 0.00
-    penalty_present: float = 0.00
-    mirostat: int = 0
-    mirostat_tau: float = 5.00
-    mirostat_eta: float = 0.10
-    penalize_nl: bool = True
+    seed: int = llama_cpp.LLAMA_DEFAULT_SEED  # the seed used to initialize llama_sampler
 
-    xtc_threshold: float = 0.1
-    xtc_probability: float = 0.0
+    n_prev: int = 64                 # number of previous tokens to remember
+    n_probs: int = 0                 # if greater than 0, output the probabilities of top n_probs tokens.
+    min_keep: int = 0                # 0 = disabled, otherwise samplers should return at least min_keep tokens
+    top_k: int = 40                  # <= 0 to use vocab size
+    top_p: float = 0.95              # 1.0 = disabled
+    min_p: float = 0.05              # 0.0 = disabled
+    xtc_probability: float = 0.0     # 0.0 = disabled
+    xtc_threshold: float = 0.1       # > 0.5 disables XTC
+    typical_p: float = 1.00          # typical_p, 1.0 = disabled
+    temp: float = 0.80               # <= 0.0 to sample greedily, 0.0 to not output probabilities
+    dynatemp_range: float = 0.00     # 0.0 = disabled
+    dynatemp_exponent: float = 1.00  # controls how entropy maps to temperature in dynamic temperature sampler
+
+    penalty_last_n: int = 64         # last n tokens to penalize (0 = disable penalty, -1 = context size)
+    penalty_repeat: float = 1.0      # 1.0 = disabled
+    penalty_freq: float = 0.00       # 0.0 = disabled
+    penalty_present: float = 0.00    # 0.0 = disabled
+
+    dry_multiplier: float = 0.0      # 0.0 = disabled;      DRY repetition penalty for tokens extending repetition:
+    dry_base: float = 1.75           # 0.0 = disabled;      multiplier * base ^ (length of sequence before token - allowed length)
+    dry_allowed_length: int = 2      # tokens extending repetitions beyond this receive penalty
+    dry_penalty_last_n: int = -1     # how many tokens to scan for repetitions (0 = disable penalty, -1 = context size)
+
+    adaptive_target: float = -1.0    # select tokens near this probability (valid range 0.0 to 1.0; negative = disabled)
+    adaptive_decay: float = 0.90     # EMA decay for adaptation; history ≈ 1/(1-decay) tokens (0.0 - 0.99)
+    mirostat: int = 0                # 0 = disabled, 1 = mirostat, 2 = mirostat 2.0
+    top_n_sigma: float = -1.00       # -1.0 = disabled
+    mirostat_tau: float = 5.00       # target entropy
+    mirostat_eta: float = 0.10       # learning rate
+
+    ignore_eos: bool = False
+    no_perf: bool = False            # disable performance metrics
+    timing_per_token: bool = False
+    backend_sampling: bool = False
+    user_sampling_config: int = 0    # bitfield to track user-specified samplers
+
+    dry_sequence_breakers: List[str] = field(
+        default_factory=lambda: ["\n", ":", "\"", "*"]  # default sequence breakers for DRY
+    )
+
+    custom_samplers: List['CustomSampler'] = field(default_factory=list)
+
+    samplers: List[CommonSamplerType] = field(
+        default_factory=lambda: [
+            CommonSamplerType.PENALTIES,
+            CommonSamplerType.DRY,
+            CommonSamplerType.TOP_N_SIGMA,
+            # CommonSamplerType.CUSTOM,  # When logits_processor is used, CommonSamplerType.CUSTOM is automatically injected into the samplers.
+            CommonSamplerType.TOP_K,
+            CommonSamplerType.TYPICAL_P,
+            CommonSamplerType.TOP_P,
+            CommonSamplerType.MIN_P,
+            CommonSamplerType.XTC,
+            CommonSamplerType.TEMPERATURE,
+        ]
+    )
 
     grammar: str = ""
+    grammar_lazy: bool = False
+    grammar_triggers: List[Any] = field(default_factory=list)
+    preserved_tokens: Set[int] = field(default_factory=set)
 
-    cfg_negative_prompt: str = ""
-    cfg_scale: float = 1.00
+    logit_bias: List[llama_cpp.llama_logit_bias] = field(default_factory=list)
+    logit_bias_eog: List[llama_cpp.llama_logit_bias] = field(default_factory=list)
 
-    logit_bias: dict[int, float] = field(default_factory=dict)
+    @property
+    def has_logit_bias(self) -> bool:
+        return len(self.logit_bias) > 0
 
+    def print_params(self) -> str:
+        result = (
+            f"\trepeat_last_n = {self.penalty_last_n}, repeat_penalty = {self.penalty_repeat:.3f}, "
+            f"frequency_penalty = {self.penalty_freq:.3f}, present_penalty = {self.penalty_present:.3f}\n"
+
+            f"\tdry_multiplier = {self.dry_multiplier:.3f}, dry_base = {self.dry_base:.3f}, "
+            f"dry_allowed_length = {self.dry_allowed_length}, dry_penalty_last_n = {self.dry_penalty_last_n}\n"
+
+            f"\ttop_k = {self.top_k}, top_p = {self.top_p:.3f}, min_p = {self.min_p:.3f}, "
+            f"xtc_probability = {self.xtc_probability:.3f}, xtc_threshold = {self.xtc_threshold:.3f}, "
+            f"typical_p = {self.typ_p:.3f}, top_n_sigma = {self.top_n_sigma:.3f}, temp = {self.temp:.3f}\n"
+
+            f"\tmirostat = {self.mirostat}, mirostat_lr = {self.mirostat_eta:.3f}, "
+            f"mirostat_ent = {self.mirostat_tau:.3f}, adaptive_target = {self.adaptive_target:.3f}, "
+            f"adaptive_decay = {self.adaptive_decay:.3f}"
+        )
+        return result
+
+    def __repr__(self) -> str:
+        return self.print_params()
+
+class GrammarSampler:
+
+    def __init__(self, model, grammar_str, lazy=False, triggers=None):
+
+        if model is None:
+            raise ValueError("model must not be None")
+
+        self.model = model
+        self.vocab = model.vocab
+
+        if not grammar_str:
+            raise ValueError("grammar_str must not be empty")
+
+        self.grammar = llama_cpp.llama_sampler_init_grammar(
+            self.vocab,
+            grammar_str.encode("utf-8"),
+            b"root"
+        )
+
+        if not self.grammar:
+            raise RuntimeError("Failed to initialize grammar sampler")
+
+    def apply(self, token_data):
+        llama_cpp.llama_sampler_apply(self.grammar, token_data)
+
+    def accept(self, token):
+        llama_cpp.llama_sampler_accept(self.grammar, token)
+
+    def reset(self):
+        llama_cpp.llama_sampler_reset(self.grammar)
+
+    def close(self):
+        if self.grammar:
+            try:
+                llama_cpp.llama_sampler_free(self.grammar)
+            except Exception:
+                pass
+
+        self.model = None
+        self.vocab = None
+        self.grammar = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 @dataclass
 class LlamaSamplingContext:
-    params: LlamaSamplingParams = field(default_factory=LlamaSamplingParams)
-    mirostat_mu: ctypes.c_float = field(default_factory=ctypes.c_float)
-    grammar: Optional[LlamaGrammar] = None
-    # NOTE: Missing parsed_grammar
-    prev: list[int] = field(default_factory=list)
-    cur: list[llama_cpp.llama_token_data] = field(default_factory=list)
+    """
+    High-level Python wrapper that manages the lifecycle and configuration
+    of the llama.cpp sampler chain.
+    """
+    def __init__(
+        self,
+        params: LlamaSamplingParams = field(default_factory=LlamaSamplingParams),
+        model: Optional[LlamaModel] = None,
+        _existing_sampler: Optional[LlamaSampler] = None, # Internal use for cloning
+    ):
+        if model is None:
+            raise RuntimeError("model must not be None")
+        self.model = model
 
-    def reset(self):
-        self.prev = []
-        self.cur = []
-        if self.grammar is not None:
-            self.grammar.reset()
+        self.params = params
+        self.vocab = llama_cpp.llama_model_get_vocab(model.model)
+        self.n_vocab = model.n_vocab()
 
-    def cp(self):
-        return LlamaSamplingContext(
-            params=self.params,
-            mirostat_mu=self.mirostat_mu,
-            grammar=self.grammar,
-            prev=self.prev.copy(),
-            cur=self.cur.copy(),
+        lparams = llama_cpp.llama_sampler_chain_default_params()
+        lparams.no_perf = params.no_perf
+
+        # history (bounded)
+        # last n tokens to consider for penalize (default: %d, 0 = disabled, -1 = ctx_size)
+        if self.params.penalty_last_n == -1:
+            # full context
+            self.params.penalty_last_n = self.model.n_ctx_train()
+
+        # params.sampling.n_prev = std::max(params.sampling.n_prev, params.sampling.penalty_last_n);
+        if self.params.penalty_last_n > 0:
+            self.params.n_prev = max(
+                self.params.n_prev,
+                self.params.penalty_last_n
+            )
+        self.prev = deque(maxlen=max(self.params.n_prev, 32))
+
+        # reusable token data array
+        self._cur_p = LlamaTokenDataArray(n_vocab=self.n_vocab)
+
+        # reusable numpy logits view
+        self._logits_view = None
+
+        self._single_token = llama_cpp.llama_token_data()
+        self._single_array = llama_cpp.llama_token_data_array(
+            data=ctypes.pointer(self._single_token),
+            size=1,
+            selected=-1,
+            sorted=False,
         )
 
-    def last(self) -> Optional[int]:
-        if len(self.prev) > 0:
-            return self.prev[-1]
+        # sampler chain
+        if _existing_sampler:
+            self.sampler_chain = _existing_sampler
         else:
-            return None
+            self.sampler_chain = LlamaSampler()
+            self._build_sampler_chain()
 
-    def prev_str(self, ctx_main: LlamaContext, n: int) -> str:
-        return ctx_main.model.detokenize(self.prev[-n:]).decode("utf-8")
+        # grammar sampler
+        self.grammar_sampler = None
+        if params.grammar:
+            self.grammar_sampler = GrammarSampler(
+                model,
+                params.grammar,
+                params.grammar_lazy,
+                params.grammar_triggers,
+            )
+
+    def _build_sampler_chain(self):
+        """
+        Build sampler chain aligned with llama.cpp common_sampler_init
+        Grammar is intentionally NOT part of the chain.
+        """
+
+        s = self.sampler_chain
+        p = self.params
+        m = self.model
+
+        if m is None:
+            raise RuntimeError("Model required to build sampler chain firstly")
+
+        use_adaptive_p = False
+
+        # --- 1. Logit Bias (Always applied first to mask/boost tokens) ---
+        if p.logit_bias and m:
+            s.add_logit_bias(m.n_vocab(), p.logit_bias)
+
+        # --- 2. Usage-Specific Samplers (Infill) ---
+        # If Infill is required, it often modifies logits based on prefix/suffix
+        if CommonSamplerType.INFILL in p.samplers and m:
+             s.add_infill(m)
+
+        # --- 3. Penalties (Repetition) ---
+        # Note: In some implementations, penalties come before other samplers
+        if CommonSamplerType.PENALTIES in p.samplers:
+            s.add_penalties(
+                p.penalty_last_n,
+                p.penalty_repeat,
+                p.penalty_freq,
+                p.penalty_present
+            )
+
+        # --- 4. DRY (Don't Repeat Yourself) ---
+        if CommonSamplerType.DRY in p.samplers and m:
+            s.add_dry(
+                m,
+                p.dry_multiplier,
+                p.dry_base,
+                p.dry_allowed_length,
+                p.dry_penalty_last_n,
+                p.dry_sequence_breakers
+            )
+
+        # --- 5. Core Sampling Strategies (The "Filter" Loop) ---
+        # We iterate through the list to preserve user-defined order for these specific samplers
+        for stype in p.samplers:
+            if stype == CommonSamplerType.CUSTOM:
+                if p.custom_samplers:
+                    for cs in p.custom_samplers:
+                        s.add_custom(cs)
+
+            elif stype == CommonSamplerType.TOP_K:
+                s.add_top_k(p.top_k)
+
+            elif stype == CommonSamplerType.TOP_P:
+                s.add_top_p(p.top_p, p.min_keep)
+
+            elif stype == CommonSamplerType.MIN_P:
+                s.add_min_p(p.min_p, p.min_keep)
+
+            elif stype == CommonSamplerType.TYPICAL_P:
+                s.add_typical(p.typical_p, p.min_keep)
+
+            elif stype == CommonSamplerType.TEMPERATURE:
+                s.add_temp(p.temp)
+
+            elif stype == CommonSamplerType.XTC:
+                s.add_xtc(p.xtc_probability, p.xtc_threshold, p.min_keep, p.seed)
+
+            elif stype == CommonSamplerType.TOP_N_SIGMA:
+                s.add_top_n_sigma(p.top_n_sigma)
+
+            elif stype == CommonSamplerType.ADAPTIVE_P:
+                use_adaptive_p = True
+
+        # --- 6. Final Distribution / Selection ---
+        # Mirostat overrides standard greedy/dist sampling
+        if p.mirostat == 1 and m:
+            s.add_mirostat(m.n_vocab(), p.seed, p.mirostat_tau, p.mirostat_eta, 100)
+        elif p.mirostat == 2:
+            s.add_mirostat_v2(p.seed, p.mirostat_tau, p.mirostat_eta)
+        else:
+            if use_adaptive_p:
+                s.add_adaptive_p(p.adaptive_target, p.adaptive_decay, p.seed)
+            else:
+                if p.temp == 0:
+                    s.add_greedy()
+                else:
+                    s.add_dist(p.seed)
+
+    def reset(self):
+        """
+        Resets the internal state of all samplers in the chain.
+        """
+        self.prev.clear()
+
+        if self.grammar_sampler:
+            self.grammar_sampler.reset()
+
+        if self.sampler_chain:
+            self.sampler_chain.reset()
+
+    def cp(self) -> 'LlamaSamplingContext':
+        """
+        Creates a deep copy of the sampling context.
+        This clones the sampler chain state
+        """
+        # 1. Clone the sampler chain using llama_sampler_clone
+        new_sampler_chain = self.sampler_chain.clone()
+
+        # 2. Create new context wrapping the cloned chain
+        new_ctx = LlamaSamplingContext(
+            self.params,
+            self.model,
+            _existing_sampler=new_sampler_chain
+        )
+
+        # 3. Copy Python-side history
+        new_ctx.prev = self.prev.copy()
+
+        return new_ctx
+
+    def accept(self, token: int, accept_grammar: bool):
+        """
+        Accepts a token into the sampler state.
+        MUST be called after sampling to update repetition penalties, grammar state, etc.
+
+        Args:
+            token: The token ID selected.
+        """
+        if self.grammar_sampler and accept_grammar:
+            self.grammar_sampler.accept(token)
+        self.sampler_chain.accept(token)
+        self.prev.append(token)
 
     def sample(
         self,
-        ctx_main: LlamaContext,
-        idx: int = 0,
-        logits_array: Optional[npt.NDArray[np.single]] = None,
-    ):
-        n_vocab = ctx_main.model.n_vocab()
-        id: int = 0
+        ctx: LlamaContext,
+        idx: int = -1,
+        grammar_first: bool = True,
+    ) -> int:
 
-        if logits_array is None:
-            logits = ctx_main.get_logits_ith(idx)
-            logits_array = np.array(
-                ctypes.cast(logits, ctypes.POINTER(ctypes.c_float * n_vocab)).contents,
-                dtype=np.single,
+        # 1. Synchronize
+        llama_cpp.llama_synchronize(ctx.ctx)
+
+        # 2. Backend sampler shortcut
+        sampled = llama_cpp.llama_get_sampled_token_ith(ctx.ctx, idx)
+        if sampled != llama_cpp.LLAMA_TOKEN_NULL:
+            if self.grammar_sampler:
+                raise RuntimeError("Backend sampling + grammar unsupported")
+            return int(sampled)
+
+        # 3. build cur_p
+        logits_ptr = llama_cpp.llama_get_logits_ith(ctx.ctx, idx)
+
+        if self._logits_view is None:
+            self._logits_view = np.ctypeslib.as_array(
+                logits_ptr,
+                shape=(self.n_vocab,),
             )
 
-        # apply logit_bias
-        for token, logit_bias in self.params.logit_bias.items():
-            logits_array[token] += logit_bias
+        logits_array = self._logits_view
+        cur_p = self._cur_p
 
-        token_data_array = LlamaTokenDataArray(
-            n_vocab=n_vocab
-        )  # TODO: Only create this once
-        token_data_array.copy_logits(logits_array)
+        cur_p.copy_logits(logits_array)
 
-        # apply penalties
-        if len(self.prev) > 0:
-            nl_token = ctx_main.model.token_nl()
-            nl_logit = logits_array[nl_token]
-            last_tokens = self.prev[-self.params.penalty_last_n :]
-            last_tokens_size = min(len(last_tokens), self.params.penalty_last_n)
-            if last_tokens_size > 0:
-                last_tokens_p = (llama_cpp.llama_token * len(last_tokens))(*last_tokens)
-                ctx_main.sample_repetition_penalties(
-                    token_data_array,
-                    last_tokens_p,
-                    last_tokens_size,
-                    self.params.penalty_repeat,
-                    self.params.penalty_freq,
-                    self.params.penalty_present,
-                )
-            if not self.params.penalize_nl:
-                token_data_array.candidates_data.logit[nl_token] = nl_logit
-
-        if self.grammar is not None:
-            ctx_main.sample_grammar(token_data_array, self.grammar)
-
-        if self.params.temp < 0:
-            id = token_data_array.candidates_data.id[0]
-        elif self.params.temp == 0:
-            id = ctx_main.sample_token_greedy(token_data_array)
-        else:
-            if self.params.mirostat == 1:
-                mirostat_m = 100
-                ctx_main.sample_temp(token_data_array, self.params.temp)
-                id = ctx_main.sample_token_mirostat(
-                    token_data_array,
-                    self.params.mirostat_tau,
-                    self.params.mirostat_eta,
-                    mirostat_m,
-                    ctypes.pointer(self.mirostat_mu),
-                )
-            elif self.params.mirostat == 2:
-                ctx_main.sample_temp(token_data_array, self.params.temp)
-                id = ctx_main.sample_token_mirostat_v2(
-                    token_data_array,
-                    self.params.mirostat_tau,
-                    self.params.mirostat_eta,
-                    ctypes.pointer(self.mirostat_mu),
-                )
-            else:
-                min_keep = max(1, self.params.n_probs)
-                ctx_main.sample_top_k(
-                    token_data_array, self.params.top_k, min_keep=min_keep
-                )
-                ctx_main.sample_typical(
-                    token_data_array, self.params.typical_p, min_keep=min_keep
-                )
-                ctx_main.sample_top_p(
-                    token_data_array, self.params.top_p, min_keep=min_keep
-                )
-                ctx_main.sample_min_p(
-                    token_data_array, self.params.min_p, min_keep=min_keep
-                )
-                ctx_main.sample_temp(token_data_array, self.params.temp)
-                id = ctx_main.sample_token(token_data_array)
-        return id
-
-    def accept(self, ctx_main: LlamaContext, id: int, apply_grammar: bool):
-        if apply_grammar and self.grammar is not None:
-            ctx_main.grammar_accept_token(self.grammar, id)
-        self.prev.append(id)
+        # logit bias
+        if self.params.logit_bias:
+            for item in self.params.logit_bias:
+                cur_p._logit_view[item.token] += item.bias
 
 
-from typing import List, Callable, Optional, Union
-import ctypes
-import llama_cpp
+        # 4. grammar first
+        if self.grammar_sampler and grammar_first:
+            llama_cpp.llama_sampler_apply(
+                self.grammar_sampler.grammar,
+                ctypes.byref(cur_p.candidates)
+            )
+
+            llama_cpp.llama_sampler_apply(
+                self.sampler_chain.sampler,
+                ctypes.byref(cur_p.candidates)
+            )
+            # grammar-first return directly
+            selected = cur_p.candidates.selected
+            return int(cur_p._id_view[selected])
+
+
+        # 5. sampling chain
+        llama_cpp.llama_sampler_apply(
+            self.sampler_chain.sampler,
+            ctypes.byref(cur_p.candidates)
+        )
+
+        selected = cur_p.candidates.selected
+        token = int(cur_p._id_view[selected])
+
+        # 6. grammar rejection sampling
+        if self.grammar_sampler:
+
+            self._single_token.id = token
+            self._single_token.logit = 1.0
+            self._single_token.p = 0.0
+            self._single_array.selected = -1
+            self._single_array.sorted = False
+
+            llama_cpp.llama_sampler_apply(
+                self.grammar_sampler.grammar,
+                ctypes.byref(self._single_array)
+            )
+
+            if not np.isneginf(self._single_token.logit):
+                return token
+
+            # 7. resample
+            cur_p.copy_logits(logits_array)
+
+            llama_cpp.llama_sampler_apply(
+                self.grammar_sampler.grammar,
+                ctypes.byref(cur_p.candidates)
+            )
+
+            llama_cpp.llama_sampler_apply(
+                self.sampler_chain.sampler,
+                ctypes.byref(cur_p.candidates)
+            )
+
+            selected = cur_p.candidates.selected
+            token = int(cur_p._id_view[selected])
+
+        return token
+
+    def close(self):
+        """
+        Release all sampling-related resources and break references
+        to large buffers to allow Python GC to reclaim memory.
+
+        This method must be called when the sampling context is no longer needed,
+        especially in long-running services, to prevent memory retention.
+        """
+
+        # Free grammar sampler if it was initialized.
+        # This releases underlying llama.cpp sampler memory.
+        if self.grammar_sampler:
+            self.grammar_sampler.close()
+            self.grammar_sampler = None
+
+        # Free the sampler chain and all attached C samplers.
+        if self.sampler_chain:
+            self.sampler_chain.close()
+            self.sampler_chain = None
+
+        # Release large token data buffer used during sampling.
+        # Important for high-vocab models to avoid memory retention.
+        if hasattr(self, "_cur_p"):
+            try:
+                self._cur_p.close()
+            except Exception:
+                pass
+            self._cur_p = None
+
+        # Clear token history deque to drop references.
+        if hasattr(self, "prev"):
+            self.prev.clear()
+            self.prev = None
+
+        # Remove NumPy view pointing to llama logits buffer.
+        self._logits_view = None
+
+        # Break references to small C structs used in grammar rejection sampling.
+        self._single_token = None
+        self._single_array = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    # --- Utilities ---
+
+    def last(self) -> Optional[int]:
+        """Returns the last sampled token."""
+        return self.prev[-1] if self.prev else None
+
+    def prev_str(self, ctx_main: LlamaContext, n: int) -> str:
+        """
+        Decodes the last n tokens into a string.
+        Useful for debugging what the sampler chain "sees" as context.
+        """
+        if not self.prev:
+            return ""
+        # Get the last n tokens
+        last_n_tokens = self.prev[-n:]
+        # Use the model linked to the context to detokenize
+        return ctx_main.model.detokenize(last_n_tokens).decode("utf-8", errors="replace")
 
 
 class CustomSampler:
+    """
+    Python wrapper for llama.cpp custom sampler.
+
+    apply_func:
+        Callable receiving llama_token_data_array
+        and modifying logits in-place.
+    """
+
     def __init__(
-        self, apply_func: Callable[[llama_cpp.llama_token_data_array], None]
+        self,
+        apply_func: Callable[[llama_cpp.llama_token_data_array], None],
+        name: str = "custom",
+        accept_func: Optional[Callable] = None,
+        reset_func: Optional[Callable] = None,
+        free_func: Optional[Callable] = None,
+        clone_func: Optional[Callable] = None,
     ):
+        if not callable(apply_func):
+            raise TypeError("apply_func must be callable")
+
         self.apply_func = apply_func
+        # Convert the name to bytes for C compatibility
+        self.name_bytes = name.encode("utf-8")
 
-        def apply_wrapper(
-            sampler: llama_cpp.llama_sampler_p,
-            cur_p: llama_cpp.llama_token_data_array_p,
-        ):
-            self.apply_func(cur_p)
+        # Define internal Python callbacks
+        def _cb_name(_):
+            return self.name_bytes
 
-        def free_wrapper(sampler: llama_cpp.llama_sampler_p):
-            pass
+        def _cb_apply(_, cur_p):
+            if cur_p:
+                self.apply_func(cur_p.contents)
 
-        sampler_i = llama_cpp.llama_sampler_i()
-        sampler_i.apply = llama_cpp.llama_sampler_i_apply(apply_wrapper)
-        self._apply_wrapper_ref = apply_wrapper
+        def _cb_accept(_, token):
+            if accept_func:
+                accept_func(token)
 
-        sampler_i.name = llama_cpp.llama_sampler_i_name(0)
-        sampler_i.accept = llama_cpp.llama_sampler_i_accept(0)
-        sampler_i.reset = llama_cpp.llama_sampler_i_reset(0)
-        sampler_i.clone = llama_cpp.llama_sampler_i_clone(0)
-        sampler_i.free = llama_cpp.llama_sampler_i_free(0)
+        def _cb_reset(_):
+            if reset_func:
+                reset_func()
 
-        self.sampler = llama_cpp.llama_sampler_init(ctypes.pointer(sampler_i), None)
+        def _cb_free(_):
+            if free_func:
+                free_func()
+
+        def _cb_clone(_):
+            if clone_func:
+                return clone_func()
+            return None
+
+        self._cb_name_ref = llama_cpp.llama_sampler_name_fn(_cb_name)
+        self._cb_apply_ref = llama_cpp.llama_sampler_apply_fn(_cb_apply)
+        self._cb_accept_ref = llama_cpp.llama_sampler_accept_fn(_cb_accept)
+        self._cb_reset_ref = llama_cpp.llama_sampler_reset_fn(_cb_reset)
+        self._cb_free_ref = llama_cpp.llama_sampler_free_fn(_cb_free)
+        self._cb_clone_ref = llama_cpp.llama_sampler_clone_fn(_cb_clone)
+
+        # Build llama_sampler_i
+        self.llama_sampler_i = llama_cpp.llama_sampler_i()
+
+        self.llama_sampler_i.name = self._cb_name_ref
+        self.llama_sampler_i.apply = self._cb_apply_ref
+        self.llama_sampler_i.accept = self._cb_accept_ref
+        self.llama_sampler_i.reset = self._cb_reset_ref
+        self.llama_sampler_i.free = self._cb_free_ref
+        self.llama_sampler_i.clone = self._cb_clone_ref
+
+        # Disable backend hooks
+        self.llama_sampler_i.backend_init = ctypes.cast(
+            0, llama_cpp.llama_sampler_backend_init_fn
+        )
+        self.llama_sampler_i.backend_accept = ctypes.cast(
+            0, llama_cpp.llama_sampler_backend_accept_fn
+        )
+        self.llama_sampler_i.backend_apply = ctypes.cast(
+            0, llama_cpp.llama_sampler_backend_apply_fn
+        )
+        self.llama_sampler_i.backend_set_input = ctypes.cast(
+            0, llama_cpp.llama_sampler_backend_set_input_fn
+        )
+
+        self.sampler_p = llama_cpp.llama_sampler_init(
+            ctypes.pointer(self.llama_sampler_i),
+            None
+        )
+
+        if not self.sampler_p:
+            raise RuntimeError("Failed to initialize custom sampler")
 
     def get_sampler(self) -> llama_cpp.llama_sampler_p:
-        return self.sampler
+        """Returns the underlying C pointer to the initialized sampler."""
+        return self.sampler_p
+
+    def close(self):
+        """Safely releases C memory and breaks Python reference cycles."""
+        if hasattr(self, 'sampler_p') and self.sampler_p:
+            try:
+                llama_cpp.llama_sampler_free(self.sampler_p)
+            except Exception:
+                pass
+            self.sampler_p = None
+
+        self.llama_sampler_i = None
+        self._cb_name_ref = None
+        self._cb_apply_ref = None
+        self._cb_accept_ref = None
+        self._cb_reset_ref = None
+        self._cb_free_ref = None
+        self._cb_clone_ref = None
+        self.apply_func = None
+
+    def __del__(self):
+        """Fallback cleanup if the object is GC before close() is called."""
+        self.close()
 
 
 class LlamaSampler:
-    def __init__(self):
-        params = llama_cpp.llama_sampler_chain_params()
-        self.sampler = llama_cpp.llama_sampler_chain_init(params)
+    def __init__(self, existing_sampler_p: Optional[llama_cpp.llama_sampler_p] = None):
+        if existing_sampler_p:
+            self.sampler = existing_sampler_p
+        else:
+            # Initialize new chain
+            params = llama_cpp.llama_sampler_chain_default_params()
+            params.no_perf = False
+            self.sampler = llama_cpp.llama_sampler_chain_init(params)
+
         self.samplers: List[llama_cpp.llama_sampler_p] = []
-        self.custom_samplers: List[Tuple[int, CustomSampler]] = []
-
-    def add_greedy(self):
-        sampler = llama_cpp.llama_sampler_init_greedy()
-        self._add_sampler(sampler)
-
-    def add_dist(self, seed: int):
-        sampler = llama_cpp.llama_sampler_init_dist(seed)
-        self._add_sampler(sampler)
-
-    def add_top_k(self, k: int):
-        sampler = llama_cpp.llama_sampler_init_top_k(k)
-        self._add_sampler(sampler)
-
-    def add_top_p(self, p: float, min_keep: int):
-        sampler = llama_cpp.llama_sampler_init_top_p(p, min_keep)
-        self._add_sampler(sampler)
-
-    def add_min_p(self, p: float, min_keep: int):
-        sampler = llama_cpp.llama_sampler_init_min_p(p, min_keep)
-        self._add_sampler(sampler)
-
-    def add_typical(self, p: float, min_keep: int):
-        sampler = llama_cpp.llama_sampler_init_typical(p, min_keep)
-        self._add_sampler(sampler)
-
-    def add_xtc(self, p: float, t: float, min_keep: int, seed: int):
-        sampler = llama_cpp.llama_sampler_init_xtc(p, t, min_keep, seed)
-        self._add_sampler(sampler)
-
-    def add_temp(self, temp: float):
-        sampler = llama_cpp.llama_sampler_init_temp(temp)
-        self._add_sampler(sampler)
-
-    def add_temp_ext(self, t: float, delta: float, exponent: float):
-        sampler = llama_cpp.llama_sampler_init_temp_ext(t, delta, exponent)
-        self._add_sampler(sampler)
-
-    def add_top_n_sigma(self, n: float):
-        sampler = llama_cpp.llama_sampler_init_top_n_sigma(n)
-        self._add_sampler(sampler)
-
-    def add_mirostat(self, n_vocab: int, seed: int, tau: float, eta: float, m: int):
-        sampler = llama_cpp.llama_sampler_init_mirostat(n_vocab, seed, tau, eta, m)
-        self._add_sampler(sampler)
-
-    def add_mirostat_v2(self, seed: int, tau: float, eta: float):
-        sampler = llama_cpp.llama_sampler_init_mirostat_v2(seed, tau, eta)
-        self._add_sampler(sampler)
-
-    def add_grammar(self, model: LlamaModel, grammar: LlamaGrammar):
-        sampler = llama_cpp.llama_sampler_init_grammar(
-            model.vocab, grammar._grammar.encode("utf-8"), grammar._root.encode("utf-8")
-        )
-        self._add_sampler(sampler)
-
-    def convert_list_str_to_char_array_ptr(self, str_list: List[str]):
-        """
-        Converts a list of strings to a char** array for C interop, and returns two values:
-        the char** array and the number of bytes in the list.
-
-        Args:
-            str_list: List of string objects.
-
-        Returns:
-            - A ctypes pointer to a char** array.
-            - The number of strings in the input list.
-        """
-        # Encode strings to bytes
-        byte_list = [s.encode('utf-8') for s in str_list]
-        # Calculate the number of breakers
-        num_byte_list= len(byte_list)
-        # Define the type of a char pointer
-        char_ptr_type = ctypes.POINTER(ctypes.c_char)
-        # Define the type of an array of char pointers
-        char_ptr_array_type = char_ptr_type * num_byte_list
-
-        # Allocate memory for the array of char pointers
-        char_ptr_array = char_ptr_array_type()
-
-        # Populate the array with pointers to the byte strings
-        for i, byte_string in enumerate(byte_list):
-            # Create a null-terminated C-style string buffer
-            c_char_array = ctypes.create_string_buffer(byte_string)
-            # Cast the buffer to a char pointer and assign it to the array
-            char_ptr_array[i] = ctypes.cast(c_char_array, char_ptr_type)
-
-        char_array_ptr = ctypes.cast(char_ptr_array, ctypes.POINTER(char_ptr_type))
-
-        # Return the char** pointer and the number of strings
-        return char_array_ptr, num_byte_list
-
-    def add_grammar_lazy_patterns(
-            self,
-            model: LlamaModel,
-            grammar: LlamaGrammar,
-            num_trigger_patterns: int,
-            trigger_tokens:list[llama_cpp.llama_token],
-            num_trigger_tokens: int,
-            trigger_patterns: list[str]=[]
-        ):
-        trigger_patterns_char_array_ptr, num_trigger_patterns = self.convert_list_str_to_char_array_ptr(trigger_patterns)
-        sampler = llama_cpp.llama_sampler_init_grammar_lazy_patterns(
-            model.vocab,
-            grammar._grammar.encode("utf-8"),
-            grammar._root.encode("utf-8"),
-            trigger_patterns_char_array_ptr,
-            num_trigger_patterns,
-            trigger_tokens,
-            num_trigger_tokens
-        )
-        self._add_sampler(sampler)
-
-
-    def add_penalties(
-        self,
-        n_vocab: int,
-        special_eos_id: int,
-        linefeed_id: int,
-        penalty_last_n: int,
-        penalty_repeat: float,
-        penalty_freq: float,
-        penalty_present: float,
-        penalize_nl: bool,
-        ignore_eos: bool,
-    ):
-        sampler = llama_cpp.llama_sampler_init_penalties(
-            penalty_last_n,
-            penalty_repeat,
-            penalty_freq,
-            penalty_present,
-        )
-        self._add_sampler(sampler)
-
-    def add_dry(
-        self,
-        model: LlamaModel,
-        dry_multiplier: float,
-        dry_base: float,
-        dry_allowed_length: int,
-        dry_penalty_last_n: int,
-        dry_seq_breakers: list[str] = ["\n", ":", "\"", "*"]
-    ):
-
-        dry_seq_breakers_char_array_ptr, num_seq_breakers = self.convert_list_str_to_char_array_ptr(dry_seq_breakers)
-
-        sampler = llama_cpp.llama_sampler_init_dry(
-            model.vocab,
-            model.n_ctx_train(),
-            dry_multiplier,
-            dry_base,
-            dry_allowed_length,
-            dry_penalty_last_n,
-            dry_seq_breakers_char_array_ptr,
-            num_seq_breakers
-        )
-        self._add_sampler(sampler)
-
-    def add_adaptive_p(
-        self,
-        target: float,
-        decay: float,
-        seed: int,
-    ):
-        sampler = llama_cpp.llama_sampler_init_adaptive_p(
-            target,
-            decay,
-            seed
-        )
-        self._add_sampler(sampler)
-
-    def add_logit_bias(
-        self, n_vocab: int, logit_bias: Dict[int, float]
-    ):
-        # Construct a C array to store the contents of the logit_bias dictionary
-        logit_bias_array = (llama_cpp.llama_logit_bias * len(logit_bias))()
-
-        for i, (token, bias) in enumerate(logit_bias.items()):
-            logit_bias_array[i].token = token
-            logit_bias_array[i].bias = bias
-
-        sampler = llama_cpp.llama_sampler_init_logit_bias(n_vocab, len(logit_bias), logit_bias_array)
-        self._add_sampler(sampler)
-
-    def add_infill(self, model: LlamaModel):
-        sampler = llama_cpp.llama_sampler_init_infill(model.vocab)
-        self._add_sampler(sampler)
-
-    def add_custom(
-        self, apply_func: Callable[[llama_cpp.llama_token_data_array], None]
-    ):
-        custom_sampler = CustomSampler(apply_func)
-        sampler = custom_sampler.get_sampler()
-        self._add_sampler(sampler)
-        # NOTE: Must remove custom samplers before free or llama.cpp will try to free them
-        self.custom_samplers.append(
-            [llama_cpp.llama_sampler_chain_n(self.sampler) - 1, custom_sampler]
-        )
+        self.custom_samplers: List["CustomSampler"] = []
+        self._keep_alive: List[Any] = []
 
     def _add_sampler(self, sampler: llama_cpp.llama_sampler_p):
-        assert self.sampler is not None
+        if not sampler:
+            raise RuntimeError("Failed to initialize sampler")
         llama_cpp.llama_sampler_chain_add(self.sampler, sampler)
         self.samplers.append(sampler)
 
-    def get_seed(self) -> int:
-        assert self.sampler is not None
-        return llama_cpp.llama_sampler_get_seed(self.sampler)
+    # --- Core Sampling Methods ---
 
-    def sample(self, ctx: LlamaContext, idx: ctypes.c_int32) -> ctypes.c_int32:
+    def accept(self, token: int):
+        """
+        Updates the sampler state (e.g. repetition penalty history).
+        """
+        assert self.sampler is not None
+
+        if token is None: raise RuntimeError("Sampler returned None token")
+
+        if token < 0: raise RuntimeError(f"Invalid token sampled: {token}")
+
+        try:
+            llama_cpp.llama_sampler_accept(self.sampler, token)
+        except Exception as e:
+            raise RuntimeError(
+                f"Sampler accept crashed. token={token}"
+            ) from e
+
+    def clone(self) -> 'LlamaSampler':
+        """
+        Clones the sampler chain and its internal state.
+        """
+        if not self.sampler:
+            raise RuntimeError("Cannot clone: sampler is closed or not initialized")
+
+        # Call C-level llama.cpp clone
+        new_sampler_p = llama_cpp.llama_sampler_clone(self.sampler)
+        if not new_sampler_p:
+            raise RuntimeError("llama_sampler_clone failed")
+
+        new_sampler = LlamaSampler(existing_sampler_p=new_sampler_p)
+
+        # copy _keep_alive and custom_samplers list to new sampler
+        if self._keep_alive:
+            new_sampler._keep_alive = self._keep_alive.copy()
+
+        if self.custom_samplers:
+            new_sampler.custom_samplers = self.custom_samplers.copy()
+
+        return new_sampler
+
+    def sample(self, ctx: LlamaContext, idx: int = -1) -> int:
+        """
+        Sample and accept a token from the idx-th output of the last evaluation
+        """
         assert self.sampler is not None
         assert ctx.ctx is not None
         return llama_cpp.llama_sampler_sample(self.sampler, ctx.ctx, idx)
 
+    def reset(self):
+        """
+        Resets the sampler state.
+        """
+        assert self.sampler is not None
+        llama_cpp.llama_sampler_reset(self.sampler)
+
+    def reset_timings(self):
+        """
+        Reset the performance timings for the sampler chain.
+        """
+        assert self.sampler is not None
+        llama_cpp.llama_perf_sampler_reset(self.sampler)
+
+    def print_timings(self):
+        """
+        Print the performance timings for each sampler in the chain.
+        """
+        assert self.sampler is not None
+        llama_cpp.llama_perf_sampler_print(self.sampler)
+
     def close(self):
         if self.sampler:
-            # NOTE: Must remove custom samplers before free or llama.cpp will try to free them
-            for i, _ in reversed(self.custom_samplers):
-                llama_cpp.llama_sampler_chain_remove(self.sampler, i)
+            # Iterate backwards to safely remove samplers without shifting indices
+            for index, custom_sampler in reversed(self.custom_samplers):
+                # Detach the custom sampler from the C-level chain
+                llama_cpp.llama_sampler_chain_remove(self.sampler, index)
+
+                # Explicitly free the custom sampler's C memory and Python callbacks
+                if custom_sampler:
+                    custom_sampler.close()
+
+            # Free the main official sampler chain
             llama_cpp.llama_sampler_free(self.sampler)
             self.sampler = None
+
+        # Clear cache lists
         self.samplers.clear()
         self.custom_samplers.clear()
+        self._keep_alive.clear()
 
     def __del__(self):
         self.close()
+
+    # --- Specific Samplers (aligning with llama-sampler.cpp) ---
+
+    def add_greedy(self):
+        self._add_sampler(llama_cpp.llama_sampler_init_greedy())
+
+    def add_dist(self, seed: int):
+        self._add_sampler(llama_cpp.llama_sampler_init_dist(seed))
+
+    def add_top_k(self, k: int):
+        self._add_sampler(llama_cpp.llama_sampler_init_top_k(k))
+
+    def add_top_p(self, p: float, min_keep: int):
+        self._add_sampler(llama_cpp.llama_sampler_init_top_p(p, min_keep))
+
+    def add_min_p(self, p: float, min_keep: int):
+        self._add_sampler(llama_cpp.llama_sampler_init_min_p(p, min_keep))
+
+    def add_typical(self, p: float, min_keep: int):
+        self._add_sampler(llama_cpp.llama_sampler_init_typical(p, min_keep))
+
+    def add_temp(self, temp: float):
+        self._add_sampler(llama_cpp.llama_sampler_init_temp(temp))
+
+    def add_temp_ext(self, t: float, delta: float, exponent: float):
+        self._add_sampler(llama_cpp.llama_sampler_init_temp_ext(t, delta, exponent))
+
+    def add_xtc(self, p: float, t: float, min_keep: int, seed: int):
+        self._add_sampler(llama_cpp.llama_sampler_init_xtc(p, t, min_keep, seed))
+
+    def add_top_n_sigma(self, n: float):
+        self._add_sampler(llama_cpp.llama_sampler_init_top_n_sigma(n))
+
+    def add_mirostat(self, n_vocab: int, seed: int, tau: float, eta: float, m: int):
+        self._add_sampler(llama_cpp.llama_sampler_init_mirostat(n_vocab, seed, tau, eta, m))
+
+    def add_mirostat_v2(self, seed: int, tau: float, eta: float):
+        self._add_sampler(llama_cpp.llama_sampler_init_mirostat_v2(seed, tau, eta))
+
+    def add_grammar(
+        self,
+        model: LlamaModel,
+        grammar_str: str,
+        lazy: bool = False,
+        triggers: List[Union[str, int]] = None
+    ):
+        """
+        Adds a grammar sampler.
+        Args:
+            grammar_str: The BNF grammar string.
+            root: The root rule name.
+            lazy: If True, enables lazy evaluation.
+            triggers: List of trigger words (str) or tokens (int) for lazy evaluation.
+        """
+        c_grammar_str = grammar_str.encode('utf-8')
+        c_root = "root".encode('utf-8')
+
+        self._keep_alive.append(c_grammar_str)
+        self._keep_alive.append(c_root)
+
+        if not lazy:
+            self._add_sampler(llama_cpp.llama_sampler_init_grammar(
+                model.vocab, c_grammar_str, c_root
+            ))
+        else:
+            trigger_patterns = []
+            trigger_tokens = []
+            if triggers:
+                for t in triggers:
+                    if isinstance(t, str):
+                        trigger_patterns.append(t)
+                    elif isinstance(t, int):
+                        trigger_tokens.append(t)
+
+            c_trigger_patterns = (ctypes.c_char_p * len(trigger_patterns))()
+            c_trigger_patterns[:] = [w.encode('utf-8') for w in trigger_patterns]
+            c_trigger_tokens = (llama_cpp.llama_token * len(trigger_tokens))(*trigger_tokens)
+
+            self._keep_alive.append(c_trigger_patterns)
+            self._keep_alive.append(c_trigger_tokens)
+
+            self._add_sampler(llama_cpp.llama_sampler_init_grammar_lazy_patterns(
+                model.vocab, c_grammar_str, c_root,
+                c_trigger_patterns, len(trigger_patterns),
+                c_trigger_tokens, len(trigger_tokens)
+            ))
+
+    def add_penalties(self, penalty_last_n: int, penalty_repeat: float, penalty_freq: float, penalty_present: float):
+        self._add_sampler(llama_cpp.llama_sampler_init_penalties(penalty_last_n, penalty_repeat, penalty_freq, penalty_present))
+
+    def add_dry(self, model: LlamaModel, multiplier: float, base: float, allowed_len: int, last_n: int, breakers: List[str]):
+        """DRY (Don't Repeat Yourself) sampler."""
+        # Convert python string list to C char**
+        c_breakers = (ctypes.c_char_p * len(breakers))()
+        c_breakers[:] = [b.encode('utf-8') for b in breakers]
+
+        self._add_sampler(llama_cpp.llama_sampler_init_dry(
+            model.vocab,
+            model.n_ctx_train(),
+            multiplier,
+            base,
+            allowed_len,
+            last_n,
+            c_breakers,
+            len(breakers)
+        ))
+
+    def add_logit_bias(self, n_vocab: int, bias_dict: List[llama_cpp.llama_logit_bias]):
+        """Logit bias sampler."""
+        if not bias_dict: return
+
+        c_bias = (llama_cpp.llama_logit_bias * len(bias_dict))()
+        for i, bias in enumerate(bias_dict):
+            c_bias[i].token = bias.token
+            c_bias[i].bias = bias.bias
+
+        self._add_sampler(llama_cpp.llama_sampler_init_logit_bias(n_vocab, len(bias_dict), c_bias))
+
+    def add_infill(self, model: LlamaModel):
+        self._add_sampler(llama_cpp.llama_sampler_init_infill(model.vocab))
+
+    def add_adaptive_p(self, target: float, decay: float, seed: int):
+        self._add_sampler(llama_cpp.llama_sampler_init_adaptive_p(target, decay, seed))
+
+    def add_custom(self, custom_sampler: CustomSampler):
+        if not isinstance(custom_sampler, CustomSampler):
+            raise TypeError("add_custom expects a CustomSampler instance")
+
+        sampler = custom_sampler.get_sampler()
+        self._add_sampler(sampler)
+
+        self.custom_samplers.append(
+            [llama_cpp.llama_sampler_chain_n(self.sampler) - 1, custom_sampler]
+        )
+
+    def get_seed(self) -> int:
+        assert self.sampler is not None
+        return llama_cpp.llama_sampler_get_seed(self.sampler)

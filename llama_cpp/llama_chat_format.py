@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import os
-import sys
-import json
+import base64
 import ctypes
 import dataclasses
 import datetime
+import json
+import os
 import random
 import string
+import sys
 
 from contextlib import ExitStack
 from typing import (
@@ -28,6 +29,9 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 import numpy as np
 import numpy.typing as npt
+
+import urllib.request
+from urllib.error import URLError, HTTPError
 
 import llama_cpp.llama_cpp as llama_cpp
 import llama_cpp.llama as llama
@@ -99,7 +103,7 @@ class LlamaChatCompletionHandler(Protocol):
             llama_types.ChatCompletionRequestResponseFormat
         ] = None,
         max_tokens: Optional[int] = None,
-        presence_penalty: float = 0.0,
+        present_penalty: float = 0.0,
         frequency_penalty: float = 0.0,
         repeat_penalty: float = 1.1,
         model: Optional[str] = None,
@@ -119,7 +123,6 @@ class LlamaChatCompletionHandler(Protocol):
         dry_seq_breakers: list[str] = ["\n", ":", "\"", "*"],
         adaptive_target : float = -1.0,
         adaptive_decay : float = 0.9,
-        use_adaptive_p: bool = False,
         use_infill: bool = False,
         logits_processor: Optional[llama.LogitsProcessorList] = None,
         grammar: Optional[llama.LlamaGrammar] = None,
@@ -600,7 +603,7 @@ def chat_formatter_to_chat_completion_handler(
             llama_types.ChatCompletionRequestResponseFormat
         ] = None,
         max_tokens: Optional[int] = None,
-        presence_penalty: float = 0.0,
+        present_penalty: float = 0.0,
         frequency_penalty: float = 0.0,
         repeat_penalty: float = 1.1,
         top_n_sigma: float = -1.00,
@@ -616,7 +619,6 @@ def chat_formatter_to_chat_completion_handler(
         dry_seq_breakers: list[str] = ["\n", ":", "\"", "*"],
         adaptive_target : float = -1.0,
         adaptive_decay : float = 0.9,
-        use_adaptive_p: bool = False,
         use_infill: bool = False,
         model: Optional[str] = None,
         logits_processor: Optional[llama.LogitsProcessorList] = None,
@@ -714,7 +716,7 @@ def chat_formatter_to_chat_completion_handler(
             stop=stop,
             seed=seed,
             max_tokens=max_tokens,
-            presence_penalty=presence_penalty,
+            present_penalty=present_penalty,
             frequency_penalty=frequency_penalty,
             repeat_penalty=repeat_penalty,
             top_n_sigma=top_n_sigma,
@@ -730,7 +732,6 @@ def chat_formatter_to_chat_completion_handler(
             dry_seq_breakers=dry_seq_breakers,
             adaptive_target=adaptive_target,
             adaptive_decay=adaptive_decay,
-            use_adaptive_p=use_adaptive_p,
             use_infill=use_infill,
             model=model,
             logits_processor=logits_processor,
@@ -1481,7 +1482,7 @@ def functionary_chat_handler(
     stop: Optional[Union[str, List[str]]] = [],
     response_format: Optional[llama_types.ChatCompletionRequestResponseFormat] = None,
     max_tokens: Optional[int] = None,
-    presence_penalty: float = 0.0,
+    present_penalty: float = 0.0,
     frequency_penalty: float = 0.0,
     repeat_penalty: float = 1.1,
     top_n_sigma: float = -1.00,
@@ -1497,7 +1498,6 @@ def functionary_chat_handler(
     dry_seq_breakers: list[str] = ["\n", ":", "\"", "*"],
     adaptive_target : float = -1.0,
     adaptive_decay : float = 0.9,
-    use_adaptive_p: bool = False,
     use_infill: bool = False,
     model: Optional[str] = None,
     logits_processor: Optional[llama.LogitsProcessorList] = None,
@@ -1698,7 +1698,7 @@ def functionary_chat_handler(
             stream=stream,
             stop=["user:", "</s>"],
             max_tokens=max_tokens,
-            presence_penalty=presence_penalty,
+            present_penalty=present_penalty,
             frequency_penalty=frequency_penalty,
             repeat_penalty=repeat_penalty,
             top_n_sigma=top_n_sigma,
@@ -1714,7 +1714,6 @@ def functionary_chat_handler(
             dry_seq_breakers=dry_seq_breakers,
             adaptive_target=adaptive_target,
             adaptive_decay=adaptive_decay,
-            use_adaptive_p=use_adaptive_p,
             use_infill=use_infill,
             model=model,
             logits_processor=logits_processor,
@@ -1790,7 +1789,7 @@ def functionary_chat_handler(
         top_k=top_k,
         min_p=min_p,
         typical_p=typical_p,
-        presence_penalty=presence_penalty,
+        present_penalty=present_penalty,
         frequency_penalty=frequency_penalty,
         repeat_penalty=repeat_penalty,
         top_n_sigma=top_n_sigma,
@@ -1806,7 +1805,6 @@ def functionary_chat_handler(
         dry_seq_breakers=dry_seq_breakers,
         adaptive_target=adaptive_target,
         adaptive_decay=adaptive_decay,
-        use_adaptive_p=use_adaptive_p,
         use_infill=use_infill,
         model=model,
         logits_processor=logits_processor,
@@ -1873,7 +1871,7 @@ def functionary_v1_v2_chat_handler(
     stop: Optional[Union[str, List[str]]] = [],
     response_format: Optional[llama_types.ChatCompletionRequestResponseFormat] = None,
     max_tokens: Optional[int] = None,
-    presence_penalty: float = 0.0,
+    present_penalty: float = 0.0,
     frequency_penalty: float = 0.0,
     repeat_penalty: float = 1.1,
     top_n_sigma: float = -1.00,
@@ -1889,7 +1887,6 @@ def functionary_v1_v2_chat_handler(
     dry_seq_breakers: list[str] = ["\n", ":", "\"", "*"],
     adaptive_target : float = -1.0,
     adaptive_decay : float = 0.9,
-    use_adaptive_p: bool = False,
     use_infill: bool = False,
     model: Optional[str] = None,
     logits_processor: Optional[llama.LogitsProcessorList] = None,
@@ -2100,7 +2097,7 @@ def functionary_v1_v2_chat_handler(
             stream=stream,
             stop=stop,
             max_tokens=max_tokens,
-            presence_penalty=presence_penalty,
+            present_penalty=present_penalty,
             frequency_penalty=frequency_penalty,
             repeat_penalty=repeat_penalty,
             top_n_sigma=top_n_sigma,
@@ -2116,7 +2113,6 @@ def functionary_v1_v2_chat_handler(
             dry_seq_breakers=dry_seq_breakers,
             adaptive_target=adaptive_target,
             adaptive_decay=adaptive_decay,
-            use_adaptive_p=use_adaptive_p,
             use_infill=use_infill,
             model=model,
             logits_processor=logits_processor,
@@ -2174,7 +2170,7 @@ def functionary_v1_v2_chat_handler(
                 stream=stream,
                 stop=stop,
                 max_tokens=max_tokens,
-                presence_penalty=presence_penalty,
+                present_penalty=present_penalty,
                 frequency_penalty=frequency_penalty,
                 repeat_penalty=repeat_penalty,
                 top_n_sigma=top_n_sigma,
@@ -2190,7 +2186,6 @@ def functionary_v1_v2_chat_handler(
                 dry_seq_breakers=dry_seq_breakers,
                 adaptive_target=adaptive_target,
                 adaptive_decay=adaptive_decay,
-                use_adaptive_p=use_adaptive_p,
                 use_infill=use_infill,
                 model=model,
                 logits_processor=logits_processor,
@@ -2788,7 +2783,7 @@ def functionary_v1_v2_chat_handler(
         )
 
 
-class Llava15ChatHandler:
+class MTMDChatHandler:
     DEFAULT_SYSTEM_MESSAGE: Optional[str] = (
 """You are an exceptionally capable, precise, and helpful multimodal AI assistant that excels at deeply understanding and richly describing images, charts, diagrams, text in images, scenes, and any visual content,
 while also answering every question accurately, clearly, and step-by-step when appropriate — always responding in the same language as the user's question, remaining polite, professional, and maximally helpful."""
@@ -2828,21 +2823,37 @@ while also answering every question accurately, clearly, and step-by-step when a
         "{% endif %}"
     )
 
-    def __init__(self, clip_model_path: str, verbose: bool = True, use_gpu: bool = True, image_min_tokens: int = -1, image_max_tokens: int = -1):
-        import llama_cpp.mtmd_cpp as mtmd_cpp
+    def __init__(
+            self,
+            clip_model_path: str,
+            verbose: bool = True,
+            use_gpu: bool = True,
+            image_min_tokens: int = -1,
+            image_max_tokens: int = -1,
+            **kwargs
+    ):
+
+        self.log_prefix = self.__class__.__name__
+        if kwargs:
+            unexpected_args = ", ".join(f"'{k}'" for k in kwargs.keys())
+            raise TypeError(
+                f"Initialization Error in {self.log_prefix}: Received unexpected keyword argument(s) {unexpected_args}.\n"
+                f"If you are passing model-specific parameters, ensure they are supported by {self.log_prefix}."
+            )
 
         self.clip_model_path = clip_model_path
         self.image_min_tokens = image_min_tokens
         self.image_max_tokens = image_max_tokens
         self.use_gpu = use_gpu
         self.verbose = verbose
+
+        import llama_cpp.mtmd_cpp as mtmd_cpp
         self._mtmd_cpp = mtmd_cpp
-        self._exit_stack = ExitStack()
         self.mtmd_ctx: Optional[mtmd_cpp.mtmd_context_p] = None
         self.extra_template_arguments: dict[str, Any] = {}
 
         if not os.path.exists(clip_model_path):
-            raise ValueError(f"Clip model path does not exist: {clip_model_path}")
+            raise ValueError(f"{self.log_prefix}(__init__): Clip model path does not exist: {clip_model_path}")
 
         # Pre-compile Jinja template
         self.chat_template = ImmutableSandboxedEnvironment(
@@ -2850,70 +2861,348 @@ while also answering every question accurately, clearly, and step-by-step when a
             lstrip_blocks=True,
         ).from_string(self.CHAT_FORMAT)
 
+        self._exit_stack = ExitStack()
+
     def _init_mtmd_context(self, llama_model: llama.Llama):
         """Initialize mtmd context with the llama model."""
         if self.mtmd_ctx is not None:
             return  # Already initialized
 
-        with suppress_stdout_stderr(disable=self.verbose):
-            self._mtmd_cpp.mtmd_helper_log_set(llama_log_callback, ctypes.c_void_p(0))
+        self._mtmd_cpp.mtmd_helper_log_set(llama_log_callback, ctypes.c_void_p(0))
 
-            # Get default parameters
-            mctx_params = self._mtmd_cpp.mtmd_context_params_default()
-            mctx_params.use_gpu = self.use_gpu
-            mctx_params.print_timings = self.verbose
-            mctx_params.n_threads = llama_model.n_threads
-            mctx_params.flash_attn_type  = self._mtmd_cpp.clip_flash_attn_type.CLIP_FLASH_ATTN_TYPE_AUTO
-            mctx_params.warmup = True
-            if self.image_min_tokens > 0:
-                mctx_params.image_min_tokens = self.image_min_tokens
-            if self.image_max_tokens > 0:
-                mctx_params.image_max_tokens = self.image_max_tokens
-            if (self.image_max_tokens < self.image_min_tokens) and self.image_max_tokens > 0:
-                raise ValueError(f"image_max_pixels {self.image_max_tokens} is less than image_min_pixels {self.image_min_tokens}")
+        # Get default parameters
+        self.mctx_params = self._mtmd_cpp.mtmd_context_params_default()
+        self.mctx_params.use_gpu = self.use_gpu
+        self.mctx_params.print_timings = self.verbose
+        self.mctx_params.n_threads = llama_model.n_threads
+        self.mctx_params.flash_attn_type  = self._mtmd_cpp.clip_flash_attn_type.CLIP_FLASH_ATTN_TYPE_AUTO
+        self.mctx_params.warmup = True
+        if self.image_min_tokens > 0:
+            self.mctx_params.image_min_tokens = self.image_min_tokens
+        if self.image_max_tokens > 0:
+            self.mctx_params.image_max_tokens = self.image_max_tokens
+        if (self.image_max_tokens < self.image_min_tokens) and self.image_max_tokens > 0:
+            raise ValueError(f"{self.log_prefix}(_init_mtmd_context): Configuration Error! image_max_tokens ({self.image_max_tokens}) "
+                                f"cannot be less than image_min_tokens ({self.image_min_tokens}).")
 
-            # Initialize mtmd context
-            self.mtmd_ctx = self._mtmd_cpp.mtmd_init_from_file(
-                self.clip_model_path.encode(),
-                llama_model.model,
-                mctx_params
-            )
+        # Cache the model's eos token and bos token
+        self.mtmd_eos_token=llama_model.detokenize([llama_model.token_eos()]).decode('utf-8', errors='ignore')
+        self.mtmd_bos_token=llama_model.detokenize([llama_model.token_bos()]).decode('utf-8', errors='ignore')
 
-            if self.mtmd_ctx is None:
-                raise ValueError(f"Failed to load mtmd context from: {self.clip_model_path}")
+        # Cache the mtmd_default_marker
+        self.media_marker = self._mtmd_cpp.mtmd_default_marker().decode('utf-8')
 
-            # Check if vision is supported
-            if not self._mtmd_cpp.mtmd_support_vision(self.mtmd_ctx):
-                raise ValueError("Vision is not supported by this model")
+        # Initialize mtmd context
+        self.mtmd_ctx = self._mtmd_cpp.mtmd_init_from_file(
+            self.clip_model_path.encode(),
+            llama_model.model,
+            self.mctx_params
+        )
 
-            def mtmd_free():
-                with suppress_stdout_stderr(disable=self.verbose):
-                    if self.mtmd_ctx is not None:
-                        self._mtmd_cpp.mtmd_free(self.mtmd_ctx)
-                        self.mtmd_ctx = None
-
-            self._exit_stack.callback(mtmd_free)
-
-    def load_image(self, image_url: str) -> bytes:
-        return self._load_image(image_url)
-
-    def _create_bitmap_from_bytes(self, image_bytes: bytes):
-        """Create mtmd_bitmap from image bytes."""
         if self.mtmd_ctx is None:
-            raise ValueError("mtmd context not initialized")
+            raise ValueError(f"{self.log_prefix}(_init_mtmd_context): Failed to load mtmd context from: {self.clip_model_path}")
 
-        with suppress_stdout_stderr(disable=self.verbose):
-            # Create bitmap from buffer using helper function
-            bitmap = self._mtmd_cpp.mtmd_helper_bitmap_init_from_buf(
-                self.mtmd_ctx,
-                (ctypes.c_uint8 * len(image_bytes)).from_buffer(bytearray(image_bytes)),
-                len(image_bytes)
-            )
+        # Check if vision is supported
+        self.is_support_vision = self._mtmd_cpp.mtmd_support_vision(self.mtmd_ctx)
+        if self.is_support_vision:
+            if self.verbose:
+                print(f"{self.log_prefix}(_init_mtmd_context): Vision support detected.", file=sys.stderr)
+        else:
+            if self.verbose:
+                print(f"{self.log_prefix}(_init_mtmd_context): Vision is NOT supported by this mmproj model backend.", file=sys.stderr)
 
-            if bitmap is None:
-                raise ValueError("Failed to create bitmap from image bytes")
+        # Check if audio is supported
+        self.is_support_audio = self._mtmd_cpp.mtmd_support_audio(self.mtmd_ctx)
+        if self.is_support_audio:
+            if self.verbose:
+                print(f"{self.log_prefix}(_init_mtmd_context): Audio support detected.", file=sys.stderr)
+        else:
+            if self.verbose:
+                print(f"{self.log_prefix}(_init_mtmd_context): Audio is NOT supported by this mmproj model backend.", file=sys.stderr)
 
-            return bitmap
+    def close(self) -> None:
+        """Explicitly free the mtmd context and vision model resources."""
+        if getattr(self, "mtmd_ctx", None) is not None:
+            try:
+                self._mtmd_cpp.mtmd_free(self.mtmd_ctx)
+            except Exception:
+                pass
+            self.mtmd_ctx = None
+            self.mctx_params = None
+            self.chat_template = None
+
+        if getattr(self, "_exit_stack", None) is not None and hasattr(self._exit_stack, "close"):
+            self._exit_stack.close()
+            self._exit_stack = None
+
+    def __del__(self) -> None:
+        self.close()
+
+    def _get_media_items(self, messages: List[llama_types.ChatCompletionRequestMessage]) -> List[Dict[str, str]]:
+        """
+        Extracts all media payloads (images, audio) sequentially to maintain exact chronological order.
+        Strictly enforces capability checks, raising exceptions if unsupported media is passed.
+
+        Returns:
+            media_items: A list of dictionaries containing the media 'url' and its 'type' (image or audio).
+        """
+        media_items: List[Dict[str, str]] = []
+        for message in messages:
+            if isinstance(message.get("content"), list):
+                for content in message["content"]:
+                    content_type = content.get("type", "")
+
+                    # 1. Vision Processing
+                    if content_type == "image_url":
+                        if not self.is_support_vision:
+                            raise ValueError(f"{self.log_prefix}: This mmproj model instance does not support image inputs.")
+
+                        url = content["image_url"] if isinstance(content["image_url"], str) else content["image_url"]["url"]
+                        media_items.append({"url": url, "type": "image"})
+
+                    # 2. Audio Processing
+                    elif content_type in ["audio_url", "input_audio"]:
+                        if not self.is_support_audio:
+                            raise ValueError(f"{self.log_prefix}: This mmproj model instance does not support audio inputs.")
+
+                        # Case A: Handle custom/forward-compatible audio_url format
+                        if content == "audio_url":
+                            url = content["audio_url"] if isinstance(content["audio_url"], str) else content["audio_url"]["url"]
+                            media_items.append({"url": url, "type": "audio"})
+                        # Case B: Handle OpenAI standard input_audio format
+                        else:
+                            input_audio = content.get("input_audio", {})
+                            if isinstance(input_audio, dict) and "data" in input_audio:
+                                # It might just be raw base64 data, we can format it as a data URI to reuse load_audio logic
+                                # input_audio: {
+                                #     data: audio.base64Data,
+                                #     format: audio.mimeType.includes('wav') ? 'wav' : 'mp3'
+                                # }
+                                audio_data = input_audio.get("data", "")
+                                audio_format = input_audio.get("format", "")
+
+                                # Strictly align with llama.cpp (require wav/mp3)
+                                if audio_format not in ["wav", "mp3"]:
+                                    raise ValueError(f"{self.log_prefix}: input_audio.format must be either 'wav' or 'mp3'")
+
+                                # Format as a Data URI to reuse the unified load_media logic
+                                media_items.append({
+                                    "url": f"data:audio/{audio_format};base64,{audio_data}",
+                                    "type": "audio"
+                                })
+                            else:
+                                # Just a raw base64 data
+                                url = input_audio if isinstance(input_audio, str) else ""
+                                if url:
+                                    media_items.append({"url": url, "type": "audio"})
+
+                    # 3. Text & Unknown Types
+                    elif content_type == "text":
+                        continue
+                    else:
+                        if self.verbose:
+                            print(f"{self.log_prefix}: Ignored unknown content type '{content_type}'.", file=sys.stderr)
+        return media_items
+
+    def _create_bitmap_from_bytes(self, media_bytes: bytes):
+        """
+        Constructs an mtmd_bitmap structure from a raw byte buffer containing media data.
+
+        Supported formats:
+          - Images (via stb_image): jpg, png, bmp, etc.
+          - Audio (via miniaudio): wav, mp3, flac.
+
+        Note:
+          - Media types (Image vs. Audio) are auto-detected by the C++ backend using magic bytes.
+          - The underlying C++ helper function is thread-safe, making it suitable for concurrent preprocessing.
+
+        Args:
+            media_bytes (bytes): The raw byte content of the media file.
+
+        Returns:
+            mtmd_bitmap: A pointer to the allocated bitmap structure containing decoded media features.
+        """
+        if self.mtmd_ctx is None:
+            raise ValueError(f"{self.log_prefix}(_create_bitmap_from_bytes): mtmd context not initialized.")
+
+        # Create bitmap from buffer using helper function
+        bitmap = self._mtmd_cpp.mtmd_helper_bitmap_init_from_buf(
+            self.mtmd_ctx,
+            (ctypes.c_uint8 * len(media_bytes)).from_buffer(bytearray(media_bytes)),
+            len(media_bytes)
+        )
+
+        if bitmap is None:
+            raise ValueError(f"{self.log_prefix}(_create_bitmap_from_bytes): "
+                                "Failed to load image or audio file from media bytes "
+                                "(unsupported media format or corrupted data).")
+
+        return bitmap
+
+
+    def _process_mtmd_prompt(
+        self,
+        llama: llama.Llama,
+        messages: List[llama_types.ChatCompletionRequestMessage],
+    ) -> Tuple[List[int], List[tuple], Any, List[Any]]:
+        """
+        Core multimodal preprocessing pipeline.
+        Converts raw chat messages into C++ MTMD chunk structures and a virtual token ledger.
+
+        Features:
+        - Thread-safe concurrent media decoding to eliminate I/O bottlenecks.
+        - "Negative Reverse Vocabulary" mapping for O(1) prefix matching of media tokens.
+        - Strict RAII-style C++ memory management to prevent leaks on failure.
+
+        Returns:
+            full_prompt_ids: Ledger of text tokens and negative media IDs for prefix matching.
+            chunk_token_spans: Tuples of (start_idx, end_idx, chunk_ptr, chunk_type, media_id).
+            chunks: Allocated C++ mtmd_input_chunks pointer (must be freed by the caller).
+            bitmap_cleanup: List of C++ bitmap pointers to be freed after evaluation.
+        """
+        # 1. Inject default system prompt if omitted by the user
+        system_prompt = next((msg["content"] for msg in messages if msg.get("role") == "system"), "")
+        if system_prompt == "" and self.DEFAULT_SYSTEM_MESSAGE is not None:
+            messages = [{"role": "system", "content": self.DEFAULT_SYSTEM_MESSAGE}] + messages
+
+        media_items = self._get_media_items(messages)
+        media_marker = self.media_marker
+
+        # 2. Render the chat template and replace actual URLs with C++ media markers
+        text = self.chat_template.render(
+            messages=messages,
+            add_generation_prompt=True,
+            eos_token=self.mtmd_eos_token,
+            bos_token=self.mtmd_bos_token,
+            **getattr(self, 'extra_template_arguments', {})
+        )
+        # Replace image_url by media_marker in text
+        for item in media_items:
+            text = text.replace(item["url"], media_marker)
+
+        if self.verbose:
+            print(f"{self.log_prefix}(_process_mtmd_prompt): Rendered prompt length: {len(text)} chars, Media count: {len(media_items)}.", file=sys.stderr)
+            print(f"{self.log_prefix}(_process_mtmd_prompt): Rendered prompt: {text}", file=sys.stderr)
+
+        # 3. Pre-allocate bitmap array to guarantee chronological order during concurrent decoding
+        bitmaps = [None] * len(media_items)
+        bitmap_cleanup = []
+        chunks = None
+
+        try:
+            # Concurrent Media Decoding
+            import concurrent.futures
+            if media_items:
+                def _create_bitmap_func(idx: int, item: str):
+                    media_bytes = self.load_media(item["url"], item["type"])
+                    bitmap = self._create_bitmap_from_bytes(media_bytes)
+                    return idx, bitmap
+                # This method uses multi-threaded parallel processing to convert images or audio to bitmaps,
+                # which can be used in the future to process large numbers of video frames.
+                max_workers = min(llama.n_threads, len(media_items))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(_create_bitmap_func, i, item) for i, item in enumerate(media_items)]
+
+                    for future in concurrent.futures.as_completed(futures):
+                        idx, bitmap = future.result()
+                        bitmaps[idx] = bitmap
+                        bitmap_cleanup.append(bitmap)
+
+                # Strict validation: Abort if any thread failed to decode its assigned media
+                if any(b is None for b in bitmaps):
+                    raise RuntimeError(f"{self.log_prefix}(_create_bitmap_func): Failed to decode one or more media files.")
+                else:
+                    if self.verbose:
+                        print(f"{self.log_prefix}(_create_bitmap_func with {max_workers} threads): {len(media_items)} bitmaps were successfully created.")
+            else:
+                # If there are no images, set the bitmaps to empty.
+                bitmaps = []
+
+            # 4. Initialize mtmd_input_chunks
+            input_text = self._mtmd_cpp.mtmd_input_text()
+            input_text.text = text.encode('utf-8')
+            input_text.add_special = (llama.n_tokens == 0)
+            input_text.parse_special = True
+
+            chunks = self._mtmd_cpp.mtmd_input_chunks_init()
+            if chunks is None:
+                raise ValueError(f"{self.log_prefix}(mtmd_input_chunks_init): Failed to initialize mtmd_input_chunks.")
+
+            # 5. Hybrid Tokenization (Text + Media binding)
+            if len(bitmaps) > 0:
+                bitmap_array = (self._mtmd_cpp.mtmd_bitmap_p_ctypes * len(bitmaps))(*bitmaps)
+                result = self._mtmd_cpp.mtmd_tokenize(
+                    self.mtmd_ctx, chunks, ctypes.byref(input_text), bitmap_array, len(bitmaps)
+                )
+            else:
+                result = self._mtmd_cpp.mtmd_tokenize(
+                    self.mtmd_ctx, chunks, ctypes.byref(input_text), None, 0
+                )
+
+            if result != 0:
+                raise ValueError(f"{self.log_prefix}(mtmd_tokenize): Unable to tokenize prompt, res = {result}.")
+
+            # 6. Virtual Token Ledger Construction
+            full_prompt_ids = []
+            chunk_token_spans = []
+            current_idx = 0
+            n_chunks = self._mtmd_cpp.mtmd_input_chunks_size(chunks)
+
+            for i in range(n_chunks):
+                chunk = self._mtmd_cpp.mtmd_input_chunks_get(chunks, i)
+                if chunk is None: continue
+                chunk_type = self._mtmd_cpp.mtmd_input_chunk_get_type(chunk)
+
+                if chunk_type == self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_TEXT:
+                    # Extract standard text token IDs
+                    n_tokens_out = ctypes.c_size_t()
+                    tokens_ptr = self._mtmd_cpp.mtmd_input_chunk_get_tokens_text(chunk, ctypes.byref(n_tokens_out))
+                    if tokens_ptr and n_tokens_out.value > 0:
+                        tokens = [tokens_ptr[j] for j in range(n_tokens_out.value)]
+                        chunk_token_spans.append((current_idx, current_idx + len(tokens), chunk, chunk_type, None))
+                        full_prompt_ids.extend(tokens)
+                        current_idx += len(tokens)
+                elif chunk_type in [
+                        self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_IMAGE,
+                        self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_AUDIO
+                    ]:
+                    # Extract media properties
+                    chunk_n_tokens = self._mtmd_cpp.mtmd_input_chunk_get_n_tokens(chunk)
+                    chunk_id_bytes = self._mtmd_cpp.mtmd_input_chunk_get_id(chunk)
+
+                    if chunk_id_bytes:
+                        # Vocabulary Positive forward: 0 to 248,319 (Qwen3.5)
+                        # Create Negative Reverse Vocabulary ID: -100 to -16,777,316
+                        # Improved longest_token_prefix search matching performance
+                        media_id = - (abs(hash(chunk_id_bytes.decode('utf-8', errors='ignore'))) % (2**24)) - 100
+                    else:
+                        # Magic Negative Number as fallback :)
+                        media_id = -314159
+
+                    chunk_token_spans.append((current_idx, current_idx + chunk_n_tokens, chunk, chunk_type, media_id))
+
+                    # Pad the ledger with the pseudo-ID to mimic the physical space taken in the KV cache
+                    full_prompt_ids.extend([media_id] * chunk_n_tokens)
+                    current_idx += chunk_n_tokens
+                else:
+                    raise TypeError(f"{self.log_prefix}(mtmd_input_chunk_get_type): Invalid chunk type, chunk_type = {chunk_type}.")
+
+            return full_prompt_ids, chunk_token_spans, chunks, bitmap_cleanup
+
+        except Exception as e:
+            # Ensure no useless pointers remain upon any failure
+            # Free chunks
+            if chunks is not None:
+                self._mtmd_cpp.mtmd_input_chunks_free(chunks)
+                chunks = None
+            # Free bitmaps
+            if len(bitmap_cleanup) > 0:
+                for bitmap in bitmap_cleanup:
+                    self._mtmd_cpp.mtmd_bitmap_free(bitmap)
+                bitmap_cleanup = None
+            bitmaps = None
+
+            raise e
 
     def __call__(
         self,
@@ -2936,7 +3225,7 @@ while also answering every question accurately, clearly, and step-by-step when a
             llama_types.ChatCompletionRequestResponseFormat
         ] = None,
         max_tokens: Optional[int] = None,
-        presence_penalty: float = 0.0,
+        present_penalty: float = 0.0,
         frequency_penalty: float = 0.0,
         repeat_penalty: float = 1.1,
         top_n_sigma: float = -1.00,
@@ -2952,7 +3241,6 @@ while also answering every question accurately, clearly, and step-by-step when a
         dry_seq_breakers: list[str] = ["\n", ":", "\"", "*"],
         adaptive_target : float = -1.0,
         adaptive_decay : float = 0.9,
-        use_adaptive_p: bool = False,
         use_infill: bool = False,
         model: Optional[str] = None,
         logits_processor: Optional[llama.LogitsProcessorList] = None,
@@ -2965,150 +3253,164 @@ while also answering every question accurately, clearly, and step-by-step when a
         llama_types.CreateChatCompletionResponse,
         Iterator[llama_types.CreateChatCompletionStreamResponse],
     ]:
-        # Initialize mtmd context
+        # 1. Initialize mtmd context
         self._init_mtmd_context(llama)
         assert self.mtmd_ctx is not None
 
-        system_prompt = _get_system_message(messages)
-        if system_prompt == "" and self.DEFAULT_SYSTEM_MESSAGE is not None:
-            messages = [
-                llama_types.ChatCompletionRequestSystemMessage(
-                    role="system", content=self.DEFAULT_SYSTEM_MESSAGE
-                )
-            ] + messages
-
-        image_urls = self.get_image_urls(messages)
-
-        # Get the default media marker
-        media_marker = self._mtmd_cpp.mtmd_default_marker().decode('utf-8')
-
-        # Replace image URLs with media markers in the template
-        text = self.chat_template.render(
-            messages=messages,
-            tools=tools,
-            add_generation_prompt=True,
-            eos_token=llama.detokenize([llama.token_eos()]),
-            bos_token=llama.detokenize([llama.token_bos()]),
-            **self.extra_template_arguments
-        )
-
-        # Replace image URLs in text with media markers
-        for image_url in image_urls:
-            text = text.replace(image_url, media_marker)
+        # 2. Concurrent Preprocessing & Ledger Construction
+        full_prompt_ids, chunk_token_spans, chunks, bitmap_cleanup = self._process_mtmd_prompt(llama, messages)
 
         if self.verbose:
-            print(text, file=sys.stderr)
+            print(f"{self.log_prefix}(__call__): Prepared virtual token ledger of length {len(full_prompt_ids)}.", file=sys.stderr)
 
-        # Create bitmaps from images
-        bitmaps = []
-        bitmap_cleanup = []
         try:
-            for image_url in image_urls:
-                image_bytes = self.load_image(image_url)
-                bitmap = self._create_bitmap_from_bytes(image_bytes)
-                bitmaps.append(bitmap)
-                bitmap_cleanup.append(bitmap)
+            # 3. KV Cache Synchronization & State Rollback
+            # Compares the virtual ledger with physical history to prevent Cache Poisoning.
+            current_history = llama.input_ids[:llama.n_tokens].tolist()
+            longest_prefix = llama.longest_token_prefix(current_history, full_prompt_ids)
 
-            # Create input text structure
-            input_text = self._mtmd_cpp.mtmd_input_text()
-            input_text.text = text.encode('utf-8')
-            input_text.add_special = (llama.n_tokens == 0)
-            input_text.parse_special = True
+            if longest_prefix < llama.n_tokens:
+                if llama.is_hybrid and llama._hybrid_cache_mgr is not None:
+                    if llama._hybrid_cache_mgr.max_checkpoints > 0:
+                        if self.verbose:
+                            print(f"{self.log_prefix}(__call__): Hybrid prefix mismatch (matched {longest_prefix}/{llama.n_tokens}). "
+                                f"Searching for nearest checkpoint...", file=sys.stderr)
 
-            # Create input chunks
-            chunks = self._mtmd_cpp.mtmd_input_chunks_init()
-            if chunks is None:
-                raise ValueError("Failed to create input chunks")
+                        best_ckpt = llama._hybrid_cache_mgr.find_best_checkpoint(full_prompt_ids, seq_id=0)
+                        if best_ckpt and llama._hybrid_cache_mgr.restore_checkpoint(best_ckpt, seq_id=0):
+                            llama.n_tokens = best_ckpt.pos
+                            if self.verbose:
+                                print(f"{self.log_prefix}(__call__): Successfully rolled back to checkpoint at pos {llama.n_tokens}.", file=sys.stderr)
+                        else:
+                            llama._hybrid_cache_mgr.clear()
+                            llama._ctx.memory_clear(True)
+                            llama.n_tokens = 0
+                    else:
+                        llama._hybrid_cache_mgr.clear()
+                        llama._ctx.memory_clear(True)
+                        llama.n_tokens = 0
+                else:
+                    if self.verbose:
+                        print(f"{self.log_prefix}(__call__): Prefix mismatch. Truncating KV cache from {llama.n_tokens} to {longest_prefix}.", file=sys.stderr)
+                    llama._ctx.memory_seq_rm(0, longest_prefix, -1)
+                    llama.n_tokens = longest_prefix
 
-            try:
-                # Tokenize text and images together
-                bitmap_array = (self._mtmd_cpp.mtmd_bitmap_p_ctypes * len(bitmaps))(*bitmaps)
-                result = self._mtmd_cpp.mtmd_tokenize(
-                    self.mtmd_ctx,
-                    chunks,
-                    ctypes.byref(input_text),
-                    bitmap_array,
-                    len(bitmaps)
-                )
+            n_past = llama.n_tokens
 
-                if result != 0:
-                    raise ValueError(f"Failed to tokenize input: error code {result}")
+            for start_idx, end_idx, chunk_ptr, chunk_type, media_id in chunk_token_spans:
+                # Skip previously matched chunks
+                if end_idx <= n_past:
+                    continue
 
-                # Reset llama context
-                llama.reset()
-                llama._ctx.memory_clear(True)
+                if chunk_type == self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_TEXT:
+                    unprocessed_start = max(start_idx, n_past) - start_idx
+                    n_tokens_out = ctypes.c_size_t()
+                    tokens_ptr = self._mtmd_cpp.mtmd_input_chunk_get_tokens_text(chunk_ptr, ctypes.byref(n_tokens_out))
 
-                # Process each chunk
-                n_past = 0
-                n_chunks = self._mtmd_cpp.mtmd_input_chunks_size(chunks)
+                    if tokens_ptr and n_tokens_out.value > 0:
+                        all_tokens = [tokens_ptr[j] for j in range(n_tokens_out.value)]
+                        tokens_to_eval = all_tokens[unprocessed_start:]
 
-                for i in range(n_chunks):
-                    chunk = self._mtmd_cpp.mtmd_input_chunks_get(chunks, i)
-                    if chunk is None: continue
-
-                    chunk_type = self._mtmd_cpp.mtmd_input_chunk_get_type(chunk)
-
-                    if chunk_type == self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_TEXT:
-                        # Handle text chunk
-                        n_tokens_out = ctypes.c_size_t()
-                        tokens_ptr = self._mtmd_cpp.mtmd_input_chunk_get_tokens_text(chunk, ctypes.byref(n_tokens_out))
-
-                        if tokens_ptr and n_tokens_out.value > 0:
-                            # Convert ctypes array to Python list
-                            tokens = [tokens_ptr[j] for j in range(n_tokens_out.value)]
-
-                            if llama.n_tokens + len(tokens) > llama.n_ctx():
-                                raise ValueError(
-                                    f"Prompt exceeds n_ctx: {llama.n_tokens + len(tokens)} > {llama.n_ctx()}"
-                                )
-                            llama.n_tokens = n_past
-                            llama.eval(tokens)
+                        if tokens_to_eval:
+                            if self.verbose:
+                                print(f"{self.log_prefix}(__call__): Evaluating TEXT chunk ({len(tokens_to_eval)} tokens) at pos {llama.n_tokens}...", file=sys.stderr)
+                            # Text evaluation delegates shift and chunking to native llama.eval
+                            llama.eval(tokens_to_eval)
                             n_past = llama.n_tokens
 
-                    elif chunk_type in [self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_IMAGE, self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_AUDIO]:
-                        # Handle image/audio chunk using helper
-                        chunk_n_tokens = self._mtmd_cpp.mtmd_input_chunk_get_n_tokens(chunk)
+                elif chunk_type in [
+                        self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_IMAGE,
+                        self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_AUDIO
+                    ]:
+                    chunk_n_tokens = self._mtmd_cpp.mtmd_input_chunk_get_n_tokens(chunk_ptr)
 
-                        if n_past + chunk_n_tokens > llama.n_ctx():
-                            raise ValueError(
-                                f"Prompt exceeds n_ctx: {n_past + chunk_n_tokens} > {llama.n_ctx()}"
+                    if self.verbose:
+                        media_str = "IMAGE" if chunk_type == self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_IMAGE else "AUDIO"
+                        print(f"{self.log_prefix}(__call__): Evaluating {media_str} chunk ({chunk_n_tokens} tokens) at pos {llama.n_tokens}...", file=sys.stderr)
+
+                    # Stage 5: Multimodal Physical OOM Defense
+                    if n_past + chunk_n_tokens > llama.n_ctx():
+                        if llama._ctx.memory_can_shift():
+                            raise RuntimeError(
+                                f"{self.log_prefix}(__call__): Context Shift is explicitly disabled by the C++ backend "
+                                f"(n_pos_per_embd > 1 or incompatible M-RoPE). "
+                                f"Multimodal chunk exceeded context limit(currently n_ctx={llama._n_ctx}), "
+                                f"You MUST increase n_ctx to fit the dialogue."
                             )
+                        else:
+                            # Safely discard oldest tokens while preserving system prompts
+                            n_discard = (n_past + chunk_n_tokens) - llama.n_ctx() + llama.n_batch
+                            n_keep = min(llama.n_keep, n_past)
+                            n_discard = min(n_discard, n_past - n_keep)
 
-                        new_n_past = llama_cpp.llama_pos(0)
-                        result = self._mtmd_cpp.mtmd_helper_eval_chunk_single(
-                            self.mtmd_ctx,
-                            llama._ctx.ctx,
-                            chunk,
-                            llama_cpp.llama_pos(n_past),
-                            llama_cpp.llama_seq_id(0),
-                            llama.n_batch,
-                            False,  # logits_last
-                            ctypes.byref(new_n_past)
-                        )
+                            if n_discard <= 0:
+                                raise RuntimeError(f"{self.log_prefix}(__call__): Critical Overflow. Not enough unpinned tokens to discard for Context Shift.")
 
-                        if result != 0:
-                            raise ValueError(f"Failed to evaluate chunk: error code {result}")
+                            if self.verbose:
+                                print(f"{self.log_prefix}(__call__): OOM risk detected. Shifting multimodal context: keeping {n_keep}, discarding {n_discard}...", file=sys.stderr)
 
-                        # Update llama's token count
-                        n_past = new_n_past.value
-                        llama.n_tokens = n_past
+                            # Execute physical memory shift
+                            llama._ctx.memory_seq_rm(0, n_keep, n_keep + n_discard)
+                            llama._ctx.memory_seq_add(0, n_keep + n_discard, n_past, -n_discard)
 
-                n_past = llama.n_tokens
-                if n_past > 0:
-                    llama._ctx.memory_seq_rm(0, n_past - 1, -1)
-                    if llama._ctx.memory_seq_pos_min(0) == llama._ctx.memory_seq_pos_max(0):
-                        n_past += 1
-                        llama.n_tokens = n_past
-                # Get prompt tokens to avoid a cache miss
-                prompt = llama.input_ids[: llama.n_tokens].tolist()
+                            # Shift python virtual array to match
+                            remaining_len = n_past - (n_keep + n_discard)
+                            if remaining_len > 0:
+                                llama.input_ids[n_keep : n_keep + remaining_len] = llama.input_ids[n_keep + n_discard : n_past]
 
-            finally:
-                self._mtmd_cpp.mtmd_input_chunks_free(chunks)
+                            n_past -= n_discard
+                            llama.n_tokens = n_past
 
+                    # Execute C++ Multimodal Black-box Extraction
+                    new_n_past = llama_cpp.llama_pos(0)
+                    result = self._mtmd_cpp.mtmd_helper_eval_chunk_single(
+                        self.mtmd_ctx,
+                        llama._ctx.ctx,
+                        chunk_ptr,
+                        llama_cpp.llama_pos(n_past),
+                        llama_cpp.llama_seq_id(0),
+                        llama.n_batch,
+                        True, # logits_last = True, drastically saves computational overhead
+                        ctypes.byref(new_n_past)
+                    )
+
+                    if result != 0:
+                        raise ValueError(f"{self.log_prefix}(mtmd_helper_eval_chunk_single): Media evaluation failed with error code {result}.")
+
+                    # Update Ledger with "Negative Reverse Vocabulary" IDs
+                    llama.input_ids[n_past : new_n_past.value] = media_id
+                    n_past = new_n_past.value
+                    llama.n_tokens = n_past
+
+            # Extract the final, perfectly synchronized prompt sequence
+            prompt = llama.input_ids[: llama.n_tokens].tolist()
+
+            # End-of-Turn Checkpoint
+            # Anchors the state ONLY after the entire multi-modal turn is processed
+            if (
+                llama.is_hybrid
+                and llama._hybrid_cache_mgr is not None
+                and llama._hybrid_cache_mgr.max_checkpoints > 0
+            ):
+                if self.verbose:
+                    print(f"{self.log_prefix}(__call__): [End-of-Turn Checkpoint] Anchoring full prompt state at pos {llama.n_tokens}.", file=sys.stderr)
+
+                llama._hybrid_cache_mgr.save_checkpoint(
+                    current_pos=llama.n_tokens,
+                    tokens=prompt,
+                    seq_id=0
+                )
         finally:
+            # Cleanup chunks
+            if chunks is not None:
+                self._mtmd_cpp.mtmd_input_chunks_free(chunks)
+                chunks = None
             # Cleanup bitmaps
-            for bitmap in bitmap_cleanup:
-                self._mtmd_cpp.mtmd_bitmap_free(bitmap)
+            if bitmap_cleanup:
+                for bitmap in bitmap_cleanup:
+                    self._mtmd_cpp.mtmd_bitmap_free(bitmap)
+                bitmap_cleanup.clear()
+            bitmap_array = None
 
         # Handle response format and tools (same as before)
         if response_format is not None and response_format["type"] == "json_object":
@@ -3173,7 +3475,7 @@ while also answering every question accurately, clearly, and step-by-step when a
             stop=stop,
             seed=seed,
             max_tokens=max_tokens,
-            presence_penalty=presence_penalty,
+            present_penalty=present_penalty,
             frequency_penalty=frequency_penalty,
             repeat_penalty=repeat_penalty,
             top_n_sigma=top_n_sigma,
@@ -3189,7 +3491,6 @@ while also answering every question accurately, clearly, and step-by-step when a
             dry_seq_breakers=dry_seq_breakers,
             adaptive_target=adaptive_target,
             adaptive_decay=adaptive_decay,
-            use_adaptive_p=use_adaptive_p,
             use_infill=use_infill,
             model=model,
             logits_processor=logits_processor,
@@ -3203,6 +3504,96 @@ while also answering every question accurately, clearly, and step-by-step when a
                 tool_name, completion_or_chunks, stream
             )
         return _convert_completion_to_chat(completion_or_chunks, stream=stream)
+
+    def load_media(self, media_url: str, media_type: str) -> bytes:
+        """
+        Unified dispatcher for loading media payloads.
+        Routes the URL/URI to the specific image or audio processor based on the media_type.
+        """
+        if media_type == "image":
+            return self._load_image(media_url)
+        elif media_type == "audio":
+            audio_bytes = self._load_audio(media_url)
+            # Apply ironclad magic bytes validation before returning
+            try:
+                self.detect_audio_format(audio_bytes)
+            except ValueError as e:
+                raise ValueError(f"{self.log_prefix}(load_media): {e}")
+            return audio_bytes
+        else:
+            raise ValueError(f"{self.log_prefix}(load_media): Unknown media type '{media_type}'")
+
+    @staticmethod
+    def detect_audio_format(audio_bytes: bytes) -> str:
+        """
+        Pure utility function: Detects the audio format from magic bytes.
+        Strictly translated from llama.cpp's `is_audio_file` to ensure 100% compatibility
+        and avoid false positives (e.g., AVI files disguised as RIFF).
+        """
+        length = len(audio_bytes)
+
+        if length < 12:
+            raise ValueError("Audio data is corrupted or too small (less than 12 bytes).")
+
+        # RIFF & WAVE magic bytes verification
+        is_wav = audio_bytes.startswith(b"RIFF") and audio_bytes[8:12] == b"WAVE"
+
+        # ID3 metadata or MPEG sync word verification
+        is_mp3 = length >= 3 and (
+            audio_bytes.startswith(b"ID3") or
+            (audio_bytes[0] == 0xFF and (audio_bytes[1] & 0xE0) == 0xE0)
+        )
+
+        # FLAC magic bytes verification
+        is_flac = audio_bytes.startswith(b"fLaC")
+
+        if is_wav:
+            return "wav"
+        elif is_mp3:
+            return "mp3"
+        elif is_flac:
+            return "flac"
+        else:
+            raise ValueError(
+                "Unsupported audio format detected via magic bytes. "
+                "The underlying C++ miniaudio backend ONLY supports WAV, MP3, and FLAC."
+            )
+
+    @staticmethod
+    def _load_audio(audio_url: str) -> bytes:
+        """
+        Load audio from either a URL, local path, or a data URI and return raw bytes.
+        """
+
+        audio_bytes = b""
+
+        # 1. Handle data URI (base64)
+        if audio_url.strip().startswith("data:"):
+            comma_pos = audio_url.find(",")
+            if comma_pos == -1:
+                raise ValueError("Invalid data URI: missing comma separator")
+            base64_data = audio_url[comma_pos + 1 :]
+            audio_bytes = base64.b64decode(base64_data)
+
+        # 2. Handle local file path
+        elif os.path.exists(audio_url):
+            with open(audio_url, "rb") as f:
+                audio_bytes = f.read()
+
+        # 3. Handle remote URL via HTTP/HTTPS
+        else:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            req = urllib.request.Request(audio_url, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=15) as f:
+                    audio_bytes = f.read()
+            except (URLError, HTTPError) as e:
+                raise ConnectionError(f"Failed to download audio from {audio_url}: {e}")
+
+        if not audio_bytes:
+            raise ValueError("Empty audio data received")
+
+        return audio_bytes
 
     @staticmethod
     def _load_image(image_url: str) -> bytes:
@@ -3222,7 +3613,6 @@ while also answering every question accurately, clearly, and step-by-step when a
 
         # 1. Handle data URI (base64)
         if image_url.strip().startswith("data:"):
-            import base64
             # Split only once from the right to correctly handle mime types containing commas
             comma_pos = image_url.find(",")
             if comma_pos == -1:
@@ -3232,9 +3622,6 @@ while also answering every question accurately, clearly, and step-by-step when a
 
         # 2. Handle local/remote URL
         else:
-            import urllib.request
-            from urllib.error import URLError, HTTPError
-
             headers = {"User-Agent": "Mozilla/5.0"}
             req = urllib.request.Request(image_url, headers=headers)
 
@@ -3284,50 +3671,6 @@ while also answering every question accurately, clearly, and step-by-step when a
         image.save(output, format="JPEG", quality=95, optimize=True, progressive=True)
         return output.getvalue()
 
-    @staticmethod
-    def get_image_urls(messages: List[llama_types.ChatCompletionRequestMessage]):
-        image_urls: List[str] = []
-        for message in messages:
-            if message["role"] == "user":
-                if message["content"] is None:
-                    continue
-                for content in message["content"]:
-                    if isinstance(content, dict) and "type" in content:
-                        if content["type"] == "image_url":
-                            if (
-                                isinstance(content["image_url"], dict)
-                                and "url" in content["image_url"]
-                            ):
-                                image_urls.append(content["image_url"]["url"])
-                            else:
-                                image_urls.append(content["image_url"])
-        return image_urls
-
-    @staticmethod
-    def split_text_on_image_urls(text: str, image_urls: List[str]):
-        """This method is no longer used in the new implementation."""
-        def find_first(s: str, substrs: List[str]):
-            for i, substr in enumerate(substrs):
-                pos = s.find(substr)
-                if pos != -1:
-                    return pos, i
-            return None, None
-
-        split_text: List[Tuple[Literal["text", "image_url"], str]] = []
-        remaining = text
-        while remaining:
-            # Find first image_url
-            pos, i = find_first(remaining, image_urls)
-            if pos is not None and i is not None:
-                if pos > 0:
-                    split_text.append(("text", remaining[:pos]))
-                split_text.append(("image_url", image_urls[i]))
-                remaining = remaining[pos + len(image_urls[i]) :]
-            else:
-                split_text.append(("text", remaining))
-                remaining = ""
-        return split_text
-
     @classmethod
     def from_pretrained(
         cls,
@@ -3337,7 +3680,7 @@ while also answering every question accurately, clearly, and step-by-step when a
         local_dir_use_symlinks: Union[bool, Literal["auto"]] = "auto",
         cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
         **kwargs: Any,
-    ) -> "Llava15ChatHandler":
+    ) -> "MTMDChatHandler":
         import fnmatch
         from pathlib import Path
 
@@ -3413,7 +3756,43 @@ while also answering every question accurately, clearly, and step-by-step when a
         )
 
 
-class ObsidianChatHandler(Llava15ChatHandler):
+class Llava15ChatHandler(MTMDChatHandler):
+    CHAT_FORMAT = (
+        "{% for message in messages %}"
+            "{% if message.role == 'system' %}"
+                "{{ message.content }}"
+            "{% endif %}"
+
+            "{% if message.role == 'user' %}"
+                "{% if message.content is string %}"
+                    "\nUSER: {{ message.content }}"
+                "{% elif message.content is iterable %}"
+                    "\nUSER: "
+                    "{% for content in message.content %}"
+                        "{% if content.type == 'image_url' %}"
+                            "{{ content.image_url if content.image_url is string else content.image_url.url }}"
+                        "{% endif %}"
+                    "{% endfor %}"
+                    "{% for content in message.content %}"
+                        "{% if content.type == 'text' %}"
+                            "{{ content.text }}"
+                        "{% endif %}"
+                    "{% endfor %}"
+                "{% endif %}"
+            "{% endif %}"
+
+            "{% if message.role == 'assistant' and message.content is not none %}"
+                "\nASSISTANT: {{ message.content }}"
+            "{% endif %}"
+        "{% endfor %}"
+
+        "{% if add_generation_prompt %}"
+            "\nASSISTANT: "
+        "{% endif %}"
+    )
+
+
+class ObsidianChatHandler(MTMDChatHandler):
     # Prompt Format
     # The model followed ChatML format. However, with ### as the seperator
 
@@ -3469,7 +3848,7 @@ class ObsidianChatHandler(Llava15ChatHandler):
     )
 
 
-class MoondreamChatHandler(Llava15ChatHandler):
+class MoondreamChatHandler(MTMDChatHandler):
     # Chat Format:
     # f"<image>\n\n{chat_history}Question: {question}\n\nAnswer:"
     CHAT_FORMAT = (
@@ -3511,7 +3890,7 @@ class MoondreamChatHandler(Llava15ChatHandler):
     )
 
 
-class Llava16ChatHandler(Llava15ChatHandler):
+class Llava16ChatHandler(MTMDChatHandler):
     # Example prompt
     # "DEFAULT_SYSTEM_MESSAGE + USER: <image>\nWhat is shown in this image? ASSISTANT:"
 
@@ -3557,7 +3936,7 @@ class Llava16ChatHandler(Llava15ChatHandler):
     )
 
 
-class NanoLlavaChatHandler(Llava15ChatHandler):
+class NanoLlavaChatHandler(MTMDChatHandler):
     # Prompt Format
     # The model follow the ChatML standard, however, without \n at the end of <|im_end|>:
 
@@ -3612,7 +3991,7 @@ class NanoLlavaChatHandler(Llava15ChatHandler):
     )
 
 
-class Llama3VisionAlphaChatHandler(Llava15ChatHandler):
+class Llama3VisionAlphaChatHandler(MTMDChatHandler):
     # question = "<image>" + q
 
     # prompt = f"<|start_header_id|>user<|end_header_id|>\n\n{question}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
@@ -3664,7 +4043,7 @@ class Llama3VisionAlphaChatHandler(Llava15ChatHandler):
 Llama3VisionAlpha = Llama3VisionAlphaChatHandler
 
 
-class MiniCPMv26ChatHandler(Llava15ChatHandler):
+class MiniCPMv26ChatHandler(MTMDChatHandler):
 
     CHAT_FORMAT = (
         "{% set image_count = namespace(value=0) %}"
@@ -3704,7 +4083,7 @@ class MiniCPMv26ChatHandler(Llava15ChatHandler):
     )
 
 
-class MiniCPMv45ChatHandler(Llava15ChatHandler):
+class MiniCPMv45ChatHandler(MTMDChatHandler):
     """
     Handler for MiniCPM-V 4.5 models.
 
@@ -3807,7 +4186,7 @@ class MiniCPMv45ChatHandler(Llava15ChatHandler):
 
         Args:
             enable_thinking (bool): If True, model generates reasoning before the final answer.
-            **kwargs: Additional arguments for the base Llava15ChatHandler.
+            **kwargs: Additional arguments for the base MTMDChatHandler.
         """
         self.enable_thinking = enable_thinking
         super().__init__(**kwargs)
@@ -3820,29 +4199,16 @@ class MiniCPMv45ChatHandler(Llava15ChatHandler):
         kwargs['stop'] = [self.MINICPMV_EOS_TOKEN, self.MINICPMV_PAD_TOKEN]
 
         llama = kwargs['llama']
-        llama.reset()
-        llama._ctx.memory_clear(True)
-        llama.n_tokens = 0
 
         if hasattr(llama, 'input_ids'):
             llama.input_ids.fill(0)
 
-        if hasattr(self, '_last_image_embed'):
-            self._last_image_embed = None
-            self._last_image_hash = None
-
         if self.verbose:
-            messages = kwargs.get('messages', [])
-            try:
-                image_count = len(self.get_image_urls(messages))
-                print(f"MiniCPMV45ChatHandler(enable_thinking={self.enable_thinking}) - Processing {image_count} images", file=sys.stderr)
-            except Exception:
-                print(f"MiniCPMV45ChatHandler - Cleared state", file=sys.stderr)
-
+            print(f"{self.log_prefix}(enable_thinking={self.enable_thinking}) - Start processing")
         return super().__call__(**kwargs)
 
 
-class Gemma3ChatHandler(Llava15ChatHandler):
+class Gemma3ChatHandler(MTMDChatHandler):
 
     GEMMA3_BOI_TOKEN  = "<start_of_image>"
     GEMMA3_EOI_TOKEN = "<end_of_image>"
@@ -3900,7 +4266,7 @@ class Gemma3ChatHandler(Llava15ChatHandler):
     )
 
 
-class GLM41VChatHandler(Llava15ChatHandler):
+class GLM41VChatHandler(MTMDChatHandler):
     # Note: Make sure the GGUF files of your converted model and mmproj are F16 or F32.
 
     GLM41V_EOS_TOKEN = "<|endoftext|>"
@@ -3953,32 +4319,17 @@ class GLM41VChatHandler(Llava15ChatHandler):
 
         llama = kwargs['llama']
 
-        # Clear state for multiple runs
-        llama.reset()
-        llama._ctx.memory_clear(True)
-        llama.n_tokens = 0
-
         if hasattr(llama, 'input_ids'):
             llama.input_ids.fill(0)
 
-        # Clear any handler state
-        if hasattr(self, '_last_image_embed'):
-            self._last_image_embed = None
-            self._last_image_hash = None
-
         if self.verbose:
-            messages = kwargs.get('messages', [])
-            try:
-                image_count = len(self.get_image_urls(messages))
-                print(f"GLM4VChatHandler - Cleared state, processing {image_count} images", file=sys.stderr)
-            except Exception:
-                print(f"GLM4VChatHandler - Cleared state", file=sys.stderr)
+            print(f"{self.log_prefix} - Start processing")
 
         # Use parent implementation
         return super().__call__(**kwargs)
 
 
-class GLM46VChatHandler(Llava15ChatHandler):
+class GLM46VChatHandler(MTMDChatHandler):
     GLM46V_EOS_TOKEN = "<|endoftext|>"
     GLM46V_PAD_TOKEN = "<|endoftext|>"
     GLM46V_IMAGE_START_TOKEN = "<|begin_of_image|>"
@@ -4056,38 +4407,26 @@ class GLM46VChatHandler(Llava15ChatHandler):
         kwargs['stop'] = [self.GLM46V_EOS_TOKEN, "<|user|>", "<|observation|>", "<|code_middle|>"] # Stop token patch
 
         llama = kwargs['llama']
-        llama.reset()
-        llama._ctx.memory_clear(True)
-        llama.n_tokens = 0
 
         if hasattr(llama, 'input_ids'):
             llama.input_ids.fill(0)
 
-        if hasattr(self, '_last_image_embed'):
-            self._last_image_embed = None
-            self._last_image_hash = None
-
         if self.verbose:
-            messages = kwargs.get('messages', [])
-            try:
-                image_count = len(self.get_image_urls(messages))
-                print(f"GLM46VChatHandler(enable_thinking={self.enable_thinking}) - Processing {image_count} images", file=sys.stderr)
-            except Exception:
-                print(f"GLM46VChatHandler(enable_thinking={self.enable_thinking}) - Cleared state", file=sys.stderr)
+            print(f"{self.log_prefix}(enable_thinking={self.enable_thinking}) - Start processing")
 
         return super().__call__(**kwargs)
 
 
-class GraniteDoclingChatHandler(Llava15ChatHandler):
+class GraniteDoclingChatHandler(MTMDChatHandler):
     """
     Handler for Granite-Docling models.
 
     Format(512x512): <loc_xmin><loc_ymin><loc_xmax><loc_ymax>Content
 
-    Note(JamePeng): The GGUF files for Model and MMPROJ should be BF16 version !!!
-                    Since the model does not have special tokens for the start and end of an image,
-                    it is recommended to process only one image at a time.
-                    You can iterate through the images individually for recognition.
+    The GGUF files for Model and MMPROJ should be BF16 version !!!
+    Since the model does not have special tokens for the start and end of an image,
+    it is recommended to process only one image at a time.
+    You can iterate through the images individually for recognition.
 
     """
     GRANITE_BOS_TOKEN = "<|start_of_role|>"
@@ -4143,29 +4482,18 @@ class GraniteDoclingChatHandler(Llava15ChatHandler):
         kwargs['stop'] = [self.GRANITE_EOS_TOKEN]
 
         llama = kwargs['llama']
-        llama.reset()
-        llama._ctx.memory_clear(True)
-        llama.n_tokens = 0
 
         if hasattr(llama, 'input_ids'):
             llama.input_ids.fill(0)
 
-        if hasattr(self, '_last_image_embed'):
-            self._last_image_embed = None
-            self._last_image_hash = None
-
         if self.verbose:
-            messages = kwargs.get('messages', [])
-            try:
-                image_count = len(self.get_image_urls(messages))
-                print(f"GraniteDoclingChatHandler - Cleared state, processing {image_count} images", file=sys.stderr)
-            except Exception:
-                print(f"GraniteDoclingChatHandler - Cleared state", file=sys.stderr)
+            print(f"{self.log_prefix} - Start processing")
+
 
         return super().__call__(**kwargs)
 
 
-class LFM2VLChatHandler(Llava15ChatHandler):
+class LFM2VLChatHandler(MTMDChatHandler):
     LFM2VL_BOS_TOKEN = "<|startoftext|>"
     LFM2VL_EOS_TOKEN = "<|im_end|>"
     LFM2VL_IMAGE_START_TOKEN = "<|image_start|>"
@@ -4208,29 +4536,125 @@ class LFM2VLChatHandler(Llava15ChatHandler):
     def __call__(self, **kwargs):
 
         llama = kwargs['llama']
-        llama.reset()
-        llama._ctx.memory_clear(True)
-        llama.n_tokens = 0
 
         if hasattr(llama, 'input_ids'):
             llama.input_ids.fill(0)
 
-        if hasattr(self, '_last_image_embed'):
-            self._last_image_embed = None
-            self._last_image_hash = None
-
         if self.verbose:
-            messages = kwargs.get('messages', [])
-            try:
-                image_count = len(self.get_image_urls(messages))
-                print(f"LFM2VLChatHandler - Cleared state, Processing {image_count} images", file=sys.stderr)
-            except Exception:
-                print(f"LFM2VLChatHandler - Cleared state", file=sys.stderr)
+            print(f"{self.log_prefix} - Start processing")
 
         return super().__call__(**kwargs)
 
 
-class Qwen25VLChatHandler(Llava15ChatHandler):
+class PaddleOCRChatHandler(MTMDChatHandler):
+    """
+    Handler for PaddleOCR 1.5 multimodal models.
+    """
+
+    PADDLEOCR_CLS_TOKEN = "<|begin_of_sentence|>"
+    PADDLEOCR_BOS_TOKEN = "<s>"
+    PADDLEOCR_EOS_TOKEN = "</s>"
+    PADDLEOCR_SEP_TOKEN = "<|end_of_sentence|>"
+    PADDLEOCR_IMAGE_BOS_TOKEN = "<|IMAGE_START|>"
+    PADDLEOCR_IMAGE_EOS_TOKEN = "<|IMAGE_END|>"
+
+    CHAT_FORMAT = (
+        "{%- if not add_generation_prompt is defined -%}{%- set add_generation_prompt = true -%}{%- endif -%}"
+        "{%- if not cls_token is defined -%}{%- set cls_token = '" + PADDLEOCR_CLS_TOKEN + "' -%}{%- endif -%}"
+        "{%- if not eos_token is defined -%}{%- set eos_token = '" + PADDLEOCR_EOS_TOKEN + "' -%}{%- endif -%}"
+
+        "{{- cls_token -}}"
+        "{%- for message in messages -%}"
+            "{%- if message['role'] == 'user' -%}"
+                "{{- 'User: ' -}}"
+
+                # Robust parsing: Check if content is string or list
+                "{%- if message['content'] is string -%}"
+                    "{{- message['content'] -}}"
+                "{%- else -%}"
+                    # Pass 1: Render all images first
+                    "{%- for content in message['content'] -%}"
+                        "{%- if content['type'] == 'image_url' and 'image_url' in content -%}"
+                            "{{- '<|IMAGE_START|>' -}}"
+                                "{%- if content.image_url is string -%}"
+                                    "{{- content.image_url -}}"
+                                "{%- else -%}"
+                                    "{{- content.image_url.url -}}"
+                                "{%- endif -%}"
+                            "{{- '<|IMAGE_END|>' -}}"
+                        "{%- endif -%}"
+                    "{%- endfor -%}"
+
+                    # Pass 2: Render all text second
+                    "{%- for content in message['content'] -%}"
+                        "{%- if content['type'] == 'text' -%}"
+                            "{{- content['text'] -}}"
+                        "{%- endif -%}"
+                    "{%- endfor -%}"
+                "{%- endif -%}"
+                "{{- '\\n' -}}"
+
+            "{%- elif message['role'] == 'assistant' -%}"
+                "{{- 'Assistant:\\n' -}}"
+                "{%- if message['content'] is string -%}"
+                    "{{- message['content'] -}}"
+                "{%- else -%}"
+                    "{%- for content in message['content'] -%}"
+                        "{%- if content['type'] == 'text' -%}"
+                            "{{- content['text'] -}}"
+                        "{%- endif -%}"
+                    "{%- endfor -%}"
+                "{%- endif -%}"
+                "{{- eos_token -}}"
+
+            "{%- elif message['role'] == 'system' -%}"
+                "{%- if message['content'] is string -%}"
+                    "{{- message['content'] + '\\n' -}}"
+                "{%- else -%}"
+                    "{%- for content in message['content'] -%}"
+                        "{%- if content['type'] == 'text' -%}"
+                            "{{- content['text'] + '\\n' -}}"
+                        "{%- endif -%}"
+                    "{%- endfor -%}"
+                "{%- endif -%}"
+            "{%- endif -%}"
+        "{%- endfor -%}"
+
+        "{%- if add_generation_prompt -%}"
+            "{{- 'Assistant:\\n' -}}"
+        "{%- endif -%}"
+    )
+
+    def __init__(
+        self,
+        image_min_tokens: int = -1,
+        image_max_tokens: int = -1,
+        **kwargs
+    ):
+        self.image_min_tokens = image_min_tokens
+        self.image_max_tokens = image_max_tokens
+        super().__init__(
+            image_min_tokens=self.image_min_tokens,
+            image_max_tokens=self.image_max_tokens,
+            **kwargs
+        )
+
+    def __call__(self, **kwargs):
+        # Set the specific stop token defined in the PaddleOCR template
+        kwargs['stop'] = [self.PADDLEOCR_EOS_TOKEN]
+
+        llama = kwargs['llama']
+
+        if hasattr(llama, 'input_ids'):
+            llama.input_ids.fill(0)
+
+        if self.verbose:
+            print(f"{self.log_prefix} - Start processing")
+
+        return super().__call__(**kwargs)
+
+
+class Qwen25VLChatHandler(MTMDChatHandler):
     CHAT_FORMAT = (
         "{% set image_count = namespace(value=0) %}"
         "{% for message in messages %}"
@@ -4264,32 +4688,17 @@ class Qwen25VLChatHandler(Llava15ChatHandler):
     def __call__(self, **kwargs):
         llama = kwargs['llama']
 
-        # Clear state for multiple runs
-        llama.reset()
-        llama._ctx.memory_clear(True)
-        llama.n_tokens = 0
-
         if hasattr(llama, 'input_ids'):
             llama.input_ids.fill(0)
 
-        # Clear any handler state
-        if hasattr(self, '_last_image_embed'):
-            self._last_image_embed = None
-            self._last_image_hash = None
-
         if self.verbose:
-            messages = kwargs.get('messages', [])
-            try:
-                image_count = len(self.get_image_urls(messages))
-                print(f"Qwen25VLChatHandler - Cleared state, processing {image_count} images", file=sys.stderr)
-            except Exception:
-                print(f"Qwen25VLChatHandler - Cleared state", file=sys.stderr)
+            print(f"{self.log_prefix} - Start processing")
 
         # Use parent implementation
         return super().__call__(**kwargs)
 
 
-class Qwen3VLChatHandler(Llava15ChatHandler):
+class Qwen3VLChatHandler(MTMDChatHandler):
     CHAT_FORMAT = (
         "{{- '<|im_start|>system\n' -}}"
         "{%- if messages[0].content is string and messages[0].role == 'system' -%}"
@@ -4381,7 +4790,6 @@ class Qwen3VLChatHandler(Llava15ChatHandler):
         self,
         force_reasoning: bool = False,
         add_vision_id: bool = True,
-        image_min_tokens: int = -1,
         **kwargs,
     ):
         """
@@ -4392,46 +4800,220 @@ class Qwen3VLChatHandler(Llava15ChatHandler):
         - add_vision_id (bool):
             - True (default): Count all the images. Recommended for multi-image.
             - False: Doesn't count the images. Can save tokens with single-image.
-        - image_min_tokens (int):
-            It only takes effect when the value is greater than zero. the default value is -1 (i.e., using the default parameters in the model's preprocessor_config.json).
-            Note: Qwen-VL models require at minimum 1024 image tokens to function correctly on bbox grounding tasks
         """
+        super().__init__(**kwargs)
         self.force_reasoning = force_reasoning
-        self.add_vision_id = add_vision_id
-        self.image_min_tokens = image_min_tokens
-
-        super().__init__(image_min_tokens=self.image_min_tokens, **kwargs)
+        self.extra_template_arguments["force_reasoning"] = force_reasoning
+        self.extra_template_arguments["add_vision_id"] = add_vision_id
 
     def __call__(self, **kwargs):
-        self.extra_template_arguments["force_reasoning"] = self.force_reasoning
-        self.extra_template_arguments["add_vision_id"] = self.add_vision_id
-
         llama = kwargs['llama']
-
-        # Clear state for multiple runs
-        llama.reset()
-        llama._ctx.memory_clear(True)
-        llama.n_tokens = 0
 
         if hasattr(llama, 'input_ids'):
             llama.input_ids.fill(0)
 
-        # Clear any handler state
-        if hasattr(self, '_last_image_embed'):
-            self._last_image_embed = None
-            self._last_image_hash = None
-
         if self.verbose:
-            messages = kwargs.get('messages', [])
-            try:
-                image_count = len(self.get_image_urls(messages))
-                print(f"Qwen3VLHandler(force_reasoning={self.force_reasoning}) - Cleared state, processing {image_count} images", file=sys.stderr)
-            except Exception:
-                print(f"Qwen3VLHandler(force_reasoning={self.force_reasoning}) - Cleared state", file=sys.stderr)
+            print(f"{self.log_prefix}(force_reasoning={self.force_reasoning}) - Start processing")
 
         # Use parent implementation
         return super().__call__(**kwargs)
 
+class Qwen35ChatHandler(MTMDChatHandler):
+    CHAT_FORMAT = (
+        "{%- set image_count = namespace(value=0) -%}"
+        "{%- set video_count = namespace(value=0) -%}"
+        "{%- macro render_content(content, do_vision_count, is_system_content=false) -%}"
+        "    {%- if content is string -%}"
+        "        {{- content -}}"
+        "    {%- elif content is iterable and content is not mapping -%}"
+        "        {%- for item in content -%}"
+        "            {%- if 'image_url' in item or item.type == 'image_url' -%}"
+        "                {%- if is_system_content -%}"
+        "                    {{- raise_exception('System message cannot contain images.') -}}"
+        "                {%- endif -%}"
+        "                {%- if do_vision_count -%}"
+        "                    {%- set image_count.value = image_count.value + 1 -%}"
+        "                {%- endif -%}"
+        "                {%- if add_vision_id -%}"
+        "                    {{- 'Picture ' -}}"
+        "                    {{- image_count.value | string -}}"
+        "                    {{- ': ' -}}"
+        "                {%- endif -%}"
+        "                {{- '<|vision_start|>' -}}"
+        "                {%- if item.image_url is string -%}"
+        "                    {{- item.image_url -}}"
+        "                {%- else -%}"
+        "                    {{- item.image_url.url -}}"
+        "                {%- endif -%}"
+        "                {{- '<|vision_end|>' -}}"
+        "            {%- elif 'video' in item -%}"
+        "                {{- raise_exception('llama.cpp does not currently support video.') -}}"  # Video not supported, raise exception
+        "                {%- if is_system_content -%}"
+        "                    {{- raise_exception('System message cannot contain videos.') -}}"
+        "                {%- endif -%}"
+        "                {%- if do_vision_count -%}"
+        "                    {%- set video_count.value = video_count.value + 1 -%}"
+        "                {%- endif -%}"
+        "                {%- if add_vision_id -%}"
+        "                    {{- 'Video ' ~ video_count.value ~ ': ' -}}"
+        "                {%- endif -%}"
+        "                {{- '<|vision_start|>' -}}"
+        "                {{- item.video -}}"
+        "                {{- '<|vision_end|>' -}}"
+        "            {%- elif 'text' in item -%}"
+        "                {{- item.text -}}"
+        "            {%- else -%}"
+        "                {{- raise_exception('Unexpected item type in content.') -}}"
+        "            {%- endif -%}"
+        "        {%- endfor -%}"
+        "    {%- elif content is none or content is undefined -%}"
+        "        {{- '' -}}"
+        "    {%- else -%}"
+        "        {{- raise_exception('Unexpected content type.') -}}"
+        "    {%- endif -%}"
+        "{%- endmacro -%}"
+        "{%- if not messages -%}"
+        "    {{- raise_exception('No messages provided.') -}}"
+        "{%- endif -%}"
+        "{%- if tools and tools is iterable and tools is not mapping -%}"
+        "    {{- '<|im_start|>system\n' -}}"
+        "    {{- '# Tools\n\nYou have access to the following functions:\n\n<tools>' -}}"
+        "    {%- for tool in tools -%}"
+        "        {{- '\n' -}}"
+        "        {{- tool | tojson -}}"
+        "    {%- endfor -%}"
+        "    {{- '\n</tools>' -}}"
+        "    {{- '\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>' -}}"
+        "    {%- if messages[0].role == 'system' -%}"
+        "        {%- set content = render_content(messages[0].content, false, true) | trim -%}"
+        "        {%- if content -%}"
+        "            {{- '\n\n' + content -}}"
+        "        {%- endif -%}"
+        "    {%- endif -%}"
+        "    {{- '<|im_end|>\n' -}}"
+        "{%- elif messages[0].role == 'system' -%}"
+        "    {%- set content = render_content(messages[0].content, false, true) -%}"
+        "    {{- '<|im_start|>system\n' + content + '<|im_end|>\n' -}}"
+        "{%- endif -%}"
+        "{%- set ns = namespace(multi_step_tool=true, last_query_index=messages | length - 1) -%}"
+        "{%- for message in messages[::-1] -%}"
+        "    {%- set index = messages | length - 1 - loop.index0 -%}"
+        "    {%- if ns.multi_step_tool and message.role == 'user' -%}"
+        "        {%- set content = render_content(message.content, false) | trim -%}"
+        "        {%- if not (content.startswith('<tool_response>') and content.endswith('</tool_response>')) -%}"
+        "            {%- set ns.multi_step_tool = false -%}"
+        "            {%- set ns.last_query_index = index -%}"
+        "        {%- endif -%}"
+        "    {%- endif -%}"
+        "{%- endfor -%}"
+        "{%- if ns.multi_step_tool -%}"
+        "    {{- raise_exception('No user query found in messages.') -}}"
+        "{%- endif -%}"
+        "{%- for message in messages -%}"
+        "    {%- set content = render_content(message.content, true) | trim -%}"
+        "    {%- if message.role == 'system' -%}"
+        "        {%- if not loop.first -%}"
+        "            {{- raise_exception('System message must be at the beginning.') -}}"
+        "        {%- endif -%}"
+        "    {%- elif message.role == 'user' -%}"
+        "        {{- '<|im_start|>' + message.role + '\n' + content + '<|im_end|>\n' -}}"
+        "    {%- elif message.role == 'assistant' -%}"
+        "        {%- set reasoning_content = '' -%}"
+        "        {%- if message.reasoning_content is string -%}"
+        "            {%- set reasoning_content = message.reasoning_content -%}"
+        "        {%- elif '</think>' in content -%}"
+        "            {%- set reasoning_content = content.split('</think>')[0].rstrip('\n').split('<think>')[-1].lstrip('\n') -%}"
+        "            {%- set content = content.split('</think>')[-1].lstrip('\n') -%}"
+        "        {%- endif -%}"
+        "        {%- set reasoning_content = reasoning_content | trim -%}"
+        "        {%- if loop.index0 > ns.last_query_index -%}"
+        "            {{- '<|im_start|>' + message.role + '\n<think>\n' + reasoning_content + '\n</think>\n\n' + content -}}"
+        "        {%- else -%}"
+        "            {{- '<|im_start|>' + message.role + '\n' + content -}}"
+        "        {%- endif -%}"
+        "        {%- if message.tool_calls and message.tool_calls is iterable and message.tool_calls is not mapping -%}"
+        "            {%- for tool_call in message.tool_call -%}"
+        "                {%- if tool_call.function is defined -%}"
+        "                    {%- set tool_call = tool_call.function -%}"
+        "                {%- endif -%}"
+        "                {%- if loop.first -%}"
+        "                    {%- if content | trim -%}"
+        "                        {{- '\n\n<tool_call>\n<function=' + tool_call.name + '>\n' -}}"
+        "                    {%- else -%}"
+        "                        {{- '<tool_call>\n<function=' + tool_call.name + '>\n' -}}"
+        "                    {%- endif -%}"
+        "                {%- else -%}"
+        "                    {{- '\n<tool_call>\n<function=' + tool_call.name + '>\n' -}}"
+        "                {%- endif -%}"
+        "                {%- if tool_call.arguments is defined -%}"
+        "                    {%- for (args_name, args_value) in tool_calls.arguments | items -%}"
+        "                        {{- '<parameter=' + args.name + '>\n' -}}"
+        "                        {%- set args_value = args_value | tojson | safe if args_value is mapping or args_value is sequence and args_value is not string else args_value | string -%}"
+        "                        {{- args_value -}}"
+        "                        {{- '\n</parameter>' -}}"
+        "                    {%- endfor -%}"
+        "                {%- endif -%}"
+        "                {{- '</function>\n</tool_call>' -}}"
+        "            {%- endfor -%}"
+        "        {%- endif -%}"
+        "        {{- '<|im_end|>\n' -}}"
+        "    {%- elif message.role == 'tool' -%}"
+        "        {%- if loop.previtem and loop.previtem.role != 'tool' -%}"
+        "            {{- '<|im_start|>user' -}}"
+        "        {%- endif -%}"
+        "        {{- '\n<tool_response>\n' -}}"
+        "        {{- content -}}"
+        "        {{- '\n</tool_response>' -}}"
+        "        {%- if not loop.last and loop.nextitem.role != 'tool' -%}"
+        "            {{- '<|im_end|>\n' -}}"
+        "        {%- elif loop.last -%}"
+        "            {{- '<|im_end|>\n' -}}"
+        "        {%- endif -%}"
+        "    {%- else -%}"
+        "        {{- raise_exception('Unexpected message role.') -}}"
+        "    {%- endif -%}"
+        "{%- endfor -%}"
+        "{%- if add_generation_prompt -%}"
+        "    {{- '<|im_start|>assistant\n' -}}"
+        "    {%- if enable_thinking is false -%}"
+        "        {{- '<think>\n\n</think>\n\n' -}}"
+        "    {%- else -%}"
+        "        {{- '<think>\n' -}}"
+        "    {%- endif -%}"
+        "{%- endif -%}"
+    )
+
+    def __init__(
+        self,
+        enable_thinking: bool = True,
+        add_vision_id: bool = True,
+        **kwargs,
+    ):
+        """
+        Parameters:
+        - enable_thinking (bool):
+            - True (default): Enables reasoning for better results.
+            - False: Disables reasoning for faster results.
+        - add_vision_id (bool):
+            - True (default): Count all the images. Recommended for multi-image.
+            - False: Doesn't count the images. Can save tokens with single-image.
+        """
+        super().__init__(**kwargs)
+        self.enable_thinking = enable_thinking
+        self.extra_template_arguments["enable_thinking"] = enable_thinking
+        self.extra_template_arguments["add_vision_id"] = add_vision_id
+
+    def __call__(self, **kwargs):
+        llama = kwargs['llama']
+
+        if hasattr(llama, 'input_ids'):
+            llama.input_ids.fill(0)
+
+        if self.verbose:
+            print(f"{self.log_prefix}(enable_thinking={self.enable_thinking}) - Start processing")
+
+        # Use parent implementation
+        return super().__call__(**kwargs)
 
 @register_chat_completion_handler("chatml-function-calling")
 def chatml_function_calling(
@@ -4450,7 +5032,7 @@ def chatml_function_calling(
     stop: Optional[Union[str, List[str]]] = [],
     response_format: Optional[llama_types.ChatCompletionRequestResponseFormat] = None,
     max_tokens: Optional[int] = None,
-    presence_penalty: float = 0.0,
+    present_penalty: float = 0.0,
     frequency_penalty: float = 0.0,
     repeat_penalty: float = 1.1,
     top_n_sigma: float = -1.00,
@@ -4466,7 +5048,6 @@ def chatml_function_calling(
     dry_seq_breakers: list[str] = ["\n", ":", "\"", "*"],
     adaptive_target : float = -1.0,
     adaptive_decay : float = 0.9,
-    use_adaptive_p: bool = False,
     use_infill: bool = False,
     model: Optional[str] = None,
     logits_processor: Optional[llama.LogitsProcessorList] = None,
@@ -4592,7 +5173,7 @@ def chatml_function_calling(
                 stream=stream,
                 stop=stop,
                 max_tokens=max_tokens,
-                presence_penalty=presence_penalty,
+                present_penalty=present_penalty,
                 frequency_penalty=frequency_penalty,
                 repeat_penalty=repeat_penalty,
                 top_n_sigma=top_n_sigma,
@@ -4608,7 +5189,6 @@ def chatml_function_calling(
                 dry_seq_breakers=dry_seq_breakers,
                 adaptive_target=adaptive_target,
                 adaptive_decay=adaptive_decay,
-                use_adaptive_p=use_adaptive_p,
                 use_infill=use_infill,
                 model=model,
                 logits_processor=logits_processor,
@@ -4656,7 +5236,7 @@ def chatml_function_calling(
             stream=stream,
             stop=stop,
             max_tokens=max_tokens,
-            presence_penalty=presence_penalty,
+            present_penalty=present_penalty,
             frequency_penalty=frequency_penalty,
             repeat_penalty=repeat_penalty,
             top_n_sigma=top_n_sigma,
@@ -4672,7 +5252,6 @@ def chatml_function_calling(
             dry_seq_breakers=dry_seq_breakers,
             adaptive_target=adaptive_target,
             adaptive_decay=adaptive_decay,
-            use_adaptive_p=use_adaptive_p,
             use_infill=use_infill,
             model=model,
             logits_processor=logits_processor,
@@ -4711,7 +5290,7 @@ def chatml_function_calling(
         stream=False,
         stop=[":"],
         max_tokens=None,
-        presence_penalty=presence_penalty,
+        present_penalty=present_penalty,
         frequency_penalty=frequency_penalty,
         repeat_penalty=repeat_penalty,
         top_n_sigma=top_n_sigma,
@@ -4727,7 +5306,6 @@ def chatml_function_calling(
         dry_seq_breakers=dry_seq_breakers,
         adaptive_target=adaptive_target,
         adaptive_decay=adaptive_decay,
-        use_adaptive_p=use_adaptive_p,
         use_infill=use_infill,
         model=model,
         logits_processor=logits_processor,
@@ -4750,7 +5328,7 @@ def chatml_function_calling(
                 stop=["<|im_end|>"],
                 logprobs=top_logprobs if logprobs else None,
                 max_tokens=None,
-                presence_penalty=presence_penalty,
+                present_penalty=present_penalty,
                 frequency_penalty=frequency_penalty,
                 repeat_penalty=repeat_penalty,
                 top_n_sigma=top_n_sigma,
@@ -4766,7 +5344,6 @@ def chatml_function_calling(
                 dry_seq_breakers=dry_seq_breakers,
                 adaptive_target=adaptive_target,
                 adaptive_decay=adaptive_decay,
-                use_adaptive_p=use_adaptive_p,
                 use_infill=use_infill,
                 model=model,
                 logits_processor=logits_processor,
@@ -4808,7 +5385,7 @@ def chatml_function_calling(
                 stream=False,
                 stop=stop,
                 max_tokens=None,
-                presence_penalty=presence_penalty,
+                present_penalty=present_penalty,
                 frequency_penalty=frequency_penalty,
                 repeat_penalty=repeat_penalty,
                 top_n_sigma=top_n_sigma,
@@ -4824,7 +5401,6 @@ def chatml_function_calling(
                 dry_seq_breakers=dry_seq_breakers,
                 adaptive_target=adaptive_target,
                 adaptive_decay=adaptive_decay,
-                use_adaptive_p=use_adaptive_p,
                 use_infill=use_infill,
                 model=model,
                 logits_processor=logits_processor,
@@ -4848,7 +5424,7 @@ def chatml_function_calling(
                 stream=False,
                 stop=stop,
                 max_tokens=None,
-                presence_penalty=presence_penalty,
+                present_penalty=present_penalty,
                 frequency_penalty=frequency_penalty,
                 repeat_penalty=repeat_penalty,
                 top_n_sigma=top_n_sigma,
@@ -4864,7 +5440,6 @@ def chatml_function_calling(
                 dry_seq_breakers=dry_seq_breakers,
                 adaptive_target=adaptive_target,
                 adaptive_decay=adaptive_decay,
-                use_adaptive_p=use_adaptive_p,
                 use_infill=use_infill,
                 model=model,
                 logits_processor=logits_processor,
