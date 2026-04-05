@@ -330,7 +330,7 @@ jobs:
                       break
                   else:
                       print(f"Attempt {attempt+1}: Waiting for release {tag}...")
-                      time.sleep(10)
+                      time.sleep(60) # We wait one minute, the Github API sometimes sucks!
 
               if not wheels:
                   print(f"No wheels for {info['label']}")
