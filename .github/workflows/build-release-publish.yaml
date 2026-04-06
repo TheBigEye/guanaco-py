@@ -212,6 +212,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Ensure tag is pushed
+        run: |
+          git tag -f "v${{ needs.get_version.outputs.version }}"
+          git push -f origin "v${{ needs.get_version.outputs.version }}"
+
       - name: Download Linux CPU wheels
         uses: actions/download-artifact@v4
         with:
@@ -315,6 +320,10 @@ jobs:
           headers = {'Authorization': f'token {token}', 'Accept': 'application/vnd.github.v3+json'}
           available_configs = []
 
+          print(f"Repo: {repo}")
+          print(f"Version: {version}")
+          print(f"Package: {package_name}")
+
           # Process each configuration
           # For each, fetch the release info and generate the simple index files
           for config, info in configs.items():
@@ -322,13 +331,23 @@ jobs:
               url = f'https://api.github.com/repos/{repo}/releases/tags/{tag}'
               wheels = []
 
+              print(f"Processing {info['label']} with tag {tag}")
+              print(f"URL: {url}")
+
               for attempt in range(5):
+                  print(f"Attempt {attempt+1} for {tag}")
                   response = requests.get(url, headers=headers)
+                  print(f"Response status: {response.status_code}")
                   if response.status_code == 200:
                       data = response.json()
-                      wheels = sorted([a['name'] for a in data.get('assets', []) if a['name'].endswith('.whl')])
+                      print(f"Release data keys: {list(data.keys())}")
+                      assets = data.get('assets', [])
+                      print(f"Number of assets: {len(assets)}")
+                      wheels = sorted([a['name'] for a in assets if a['name'].endswith('.whl')])
+                      print(f"Wheels found: {wheels}")
                       break
                   else:
+                      print(f"Response text: {response.text}")
                       print(f"Attempt {attempt+1}: Waiting for release {tag}...")
                       time.sleep(60) # We wait one minute, the Github API sometimes sucks!
 
@@ -378,6 +397,7 @@ jobs:
               f.write('\n'.join(root_lines))
 
           print("Generated root index")
+          print(f"Available configs: {available_configs}")
           PYEOF
 
       - name: Upload Pages artifact
