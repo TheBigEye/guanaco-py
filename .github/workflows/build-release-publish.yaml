@@ -218,13 +218,13 @@ jobs:
           git push -f origin "v${{ needs.get_version.outputs.version }}"
 
       - name: Download Linux CPU wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wheels-cpu-linux
           path: dist
 
       - name: Download Windows CPU wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wheels-cpu-windows
           path: dist
@@ -253,7 +253,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Download wheels for ${{ matrix.short }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheel-cuda-*-${{ matrix.short }}
           path: dist
