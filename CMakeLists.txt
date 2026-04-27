@@ -5,6 +5,12 @@ project(llama_cpp)
 option(LLAMA_BUILD "Build llama.cpp shared library and install alongside python package" ON)
 option(MTMD_BUILD "Build mtmd shared library and install alongside python package" ON)
 
+
+set(CMAKE_INSTALL_BINDIR llama_cpp/bin CACHE PATH "" FORCE)
+set(CMAKE_INSTALL_LIBDIR llama_cpp/lib CACHE PATH "" FORCE)
+set(CMAKE_INSTALL_INCLUDEDIR llama_cpp/include CACHE PATH "" FORCE)
+
+
 # Helper function to install targets to Python package directories
 function(llama_cpp_python_install_target target)
     if(NOT TARGET ${target})
@@ -68,6 +74,9 @@ if (LLAMA_BUILD)
     # Enable building of the common library
     set(LLAMA_BUILD_COMMON ON CACHE BOOL "llama.cpp: build common utils library" FORCE)
 
+    # Enable build and link OpenSSL
+    set(LLAMA_OPENSSL ON CACHE BOOL "llama.cpp: build and link OpenSSL" FORCE)
+
     # Disable building of examples
     set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "llama.cpp: build examples" FORCE)
 
@@ -76,9 +85,6 @@ if (LLAMA_BUILD)
 
     # Disable building curl support
     set(LLAMA_CURL OFF CACHE BOOL "llama.cpp: use libcurl to download model from an URL" FORCE)
-
-    # Enable build and link OpenSSL
-    set(LLAMA_OPENSSL ON CACHE BOOL "llama.cpp: build and link OpenSSL" FORCE)
 
     # Architecture detection and settings for Apple platforms
     if (APPLE)
@@ -106,10 +112,8 @@ if (LLAMA_BUILD)
 
     add_subdirectory(vendor/llama.cpp)
 
-    if (WIN32)
-        if (TARGET llama)
-            set_target_properties(llama PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-        endif()
+    if (WIN32 AND TARGET llama)
+        set_target_properties(llama PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
     endif()
 
     # Define list of GGML targets to install
@@ -126,8 +130,10 @@ if (LLAMA_BUILD)
         ggml-metal
         ggml-musa
         ggml-opencl
+        ggml-openvino
         ggml-rpc
         ggml-sycl
+        ggml-virtgpu
         ggml-vulkan
         ggml-webgpu
         ggml-zdnn
