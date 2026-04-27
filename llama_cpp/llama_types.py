@@ -3,7 +3,7 @@
 NOTE: These types may change to match the OpenAI OpenAPI specification.
 
 Based on the OpenAI OpenAPI specification:
-https://github.com/openai/openai-openapi/blob/master/openapi.yaml
+https://app.stainless.com/api/spec/documented/openai/openapi.documented.yml
 
 """
 
@@ -46,13 +46,27 @@ class CompletionChoice(TypedDict):
     text: str
     index: int
     logprobs: Optional[CompletionLogprobs]
-    finish_reason: Optional[Literal["stop", "length"]]
+    finish_reason: Optional[Literal["stop", "length", "content_filter"]]
+
+
+class PromptTokensDetails(TypedDict):
+    cached_tokens: NotRequired[int]
+    audio_tokens: NotRequired[int]
+
+
+class CompletionTokensDetails(TypedDict):
+    reasoning_tokens: NotRequired[int]
+    audio_tokens: NotRequired[int]
+    accepted_prediction_tokens: NotRequired[int]
+    rejected_prediction_tokens: NotRequired[int]
 
 
 class CompletionUsage(TypedDict):
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    prompt_tokens_details: NotRequired[PromptTokensDetails]
+    completion_tokens_details: NotRequired[CompletionTokensDetails]
 
 
 class CreateCompletionResponse(TypedDict):
@@ -69,11 +83,37 @@ class ChatCompletionResponseFunctionCall(TypedDict):
     arguments: str
 
 
+class ChatCompletionResponseMessageFunctionCall(TypedDict):
+    arguments: str
+    name: str
+
+
+class ChatCompletionResponseMessageAudio(TypedDict):
+    id: str
+    expires_at: int
+    data: str
+    transcript: str
+
+
+class ChatCompletionResponseMessageAnnotationURLCitation(TypedDict):
+    end_index: int
+    start_index: int
+    url: str
+    title: str
+
+class ChatCompletionResponseMessageAnnotation(TypedDict):
+    type: Literal["url_citation"]
+    url_citation: ChatCompletionResponseMessageAnnotationURLCitation
+
+
 class ChatCompletionResponseMessage(TypedDict):
     content: Optional[str]
+    refusal: Optional[str]
+    role: Literal["assistant"]
     tool_calls: NotRequired["ChatCompletionMessageToolCalls"]
-    role: Literal["assistant", "function"]  # NOTE: "function" may be incorrect here
-    function_call: NotRequired[ChatCompletionResponseFunctionCall]  # DEPRECATED
+    annotations: NotRequired[List[ChatCompletionResponseMessageAnnotation]]
+    function_call: NotRequired[ChatCompletionResponseMessageFunctionCall]  # DEPRECATED
+    audio: NotRequired[Optional[ChatCompletionResponseMessageAudio]]
 
 
 class ChatCompletionFunction(TypedDict):
@@ -104,7 +144,10 @@ class ChatCompletionResponseChoice(TypedDict):
     index: int
     message: "ChatCompletionResponseMessage"
     logprobs: Optional[ChatCompletionLogprobs]
-    finish_reason: Optional[str]
+    finish_reason: Optional[Literal["stop", "length", "tool_calls", "content_filter", "function_call"]]
+
+
+ServiceTier = Literal["auto", "default", "flex", "scale", "priority"]
 
 
 class CreateChatCompletionResponse(TypedDict):
@@ -112,6 +155,7 @@ class CreateChatCompletionResponse(TypedDict):
     object: Literal["chat.completion"]
     created: int
     model: str
+    service_tier: NotRequired[ServiceTier]
     choices: List["ChatCompletionResponseChoice"]
     usage: CompletionUsage
 
@@ -137,13 +181,23 @@ class ChatCompletionStreamResponseDeltaFunctionCall(TypedDict):
     arguments: str
 
 
+ChatCompletionRole = Literal[
+    "developer",
+    "system",
+    "user",
+    "assistant",
+    "tool",
+    "function"
+]
+
+
 class ChatCompletionStreamResponseDelta(TypedDict):
     content: NotRequired[Optional[str]]
     function_call: NotRequired[
         Optional[ChatCompletionStreamResponseDeltaFunctionCall]
     ]  # DEPRECATED
     tool_calls: NotRequired[Optional[List[ChatCompletionMessageToolCallChunk]]]
-    role: NotRequired[Optional[Literal["system", "user", "assistant", "tool"]]]
+    role: NotRequired[Optional[Literal["developer", "system", "user", "assistant", "tool"]]]
 
 
 class ChatCompletionStreamResponseChoice(TypedDict):
@@ -151,7 +205,7 @@ class ChatCompletionStreamResponseChoice(TypedDict):
     delta: Union[
         ChatCompletionStreamResponseDelta, ChatCompletionStreamResponseDeltaEmpty
     ]
-    finish_reason: Optional[Literal["stop", "length", "tool_calls", "function_call"]]
+    finish_reason: Optional[Literal["stop", "length", "tool_calls", "content_filter", "function_call"]]
     logprobs: NotRequired[Optional[ChatCompletionLogprobs]]
 
 
@@ -161,6 +215,7 @@ class CreateChatCompletionStreamResponse(TypedDict):
     object: Literal["chat.completion.chunk"]
     created: int
     choices: List[ChatCompletionStreamResponseChoice]
+    usage: NotRequired[CompletionUsage]
 
 
 class ChatCompletionFunctions(TypedDict):
@@ -173,11 +228,16 @@ class ChatCompletionFunctionCallOption(TypedDict):
     name: str
 
 
+class ChatCompletionResponseFormatJSONSchema(TypedDict):
+    name: str
+    description: NotRequired[str]
+    schema: NotRequired[Dict[str, Any]]
+    strict: NotRequired[Optional[bool]]
+
+
 class ChatCompletionRequestResponseFormat(TypedDict):
-    type: Literal["text", "json_object"]
-    schema: NotRequired[
-        JsonType
-    ]  # https://docs.endpoints.anyscale.com/guides/json_mode/
+    type: Literal["text", "json_object", "json_schema"]
+    json_schema: NotRequired[ChatCompletionResponseFormatJSONSchema]
 
 
 class ChatCompletionRequestMessageContentPartText(TypedDict):
@@ -195,10 +255,43 @@ class ChatCompletionRequestMessageContentPartImage(TypedDict):
     image_url: Union[str, ChatCompletionRequestMessageContentPartImageImageUrl]
 
 
+class ChatCompletionRequestMessageContentPartInputAudioData(TypedDict):
+    data: str
+    format: Literal["wav", "mp3"]
+
+
+class ChatCompletionRequestMessageContentPartAudio(TypedDict):
+    type: Literal["input_audio"]
+    input_audio: ChatCompletionRequestMessageContentPartInputAudioData
+
+
+class ChatCompletionRequestMessageContentPartFileData(TypedDict):
+    filename: NotRequired[str]
+    file_data: NotRequired[str]
+    file_id: NotRequired[str]
+
+
+class ChatCompletionRequestMessageContentPartFile(TypedDict):
+    type: Literal["file"]
+    file: ChatCompletionRequestMessageContentPartFileData
+
+
+class ChatCompletionRequestMessageContentPartRefusal(TypedDict):
+    type: Literal["refusal"]
+    refusal: str
+
+
 ChatCompletionRequestMessageContentPart = Union[
     ChatCompletionRequestMessageContentPartText,
     ChatCompletionRequestMessageContentPartImage,
+    ChatCompletionRequestMessageContentPartAudio,
+    ChatCompletionRequestMessageContentPartFile,
 ]
+
+
+class ChatCompletionRequestDeveloperMessage(TypedDict):
+    role: Literal["developer"]
+    content: Optional[str]
 
 
 class ChatCompletionRequestSystemMessage(TypedDict):
@@ -211,28 +304,132 @@ class ChatCompletionRequestUserMessage(TypedDict):
     content: Optional[Union[str, List[ChatCompletionRequestMessageContentPart]]]
 
 
+# Function tool call
+
 class ChatCompletionMessageToolCallFunction(TypedDict):
+    """The function that the model called."""
     name: str
     arguments: str
 
 
 class ChatCompletionMessageToolCall(TypedDict):
+    """A call to a function tool created by the model."""
     id: str
     type: Literal["function"]
     function: ChatCompletionMessageToolCallFunction
 
+# Custom tool call
 
-ChatCompletionMessageToolCalls = List[ChatCompletionMessageToolCall]
+class ChatCompletionMessageCustomToolCallCustom(TypedDict):
+    """The custom tool that the model called."""
+    name: str
+    input: str
 
+class ChatCompletionMessageCustomToolCall(TypedDict):
+    """A call to a custom tool created by the model."""
+    id: str
+    type: Literal["custom"]
+    custom: ChatCompletionMessageCustomToolCallCustom
+
+# The tool calls generated by the model, such as function calls.
+ChatCompletionMessageToolCalls = Union[
+    ChatCompletionMessageToolCall,
+    ChatCompletionMessageCustomToolCall
+]
+
+
+# MCP ToolCall
+
+MCPConnectorID = Literal[
+    "connector_dropbox",
+    "connector_gmail",
+    "connector_googlecalendar",
+    "connector_googledrive",
+    "connector_microsoftteams",
+    "connector_outlookcalendar",
+    "connector_outlookemail",
+    "connector_sharepoint"
+]
+
+MCPToolCallStatus = Literal["in_progress", "completed", "incomplete", "calling", "failed"]
+
+class MCPToolCall(TypedDict):
+    """An invocation of a tool on an MCP server."""
+    type: Literal["mcp_call"]
+    id: str
+    server_label: str
+    name: str
+    arguments: str  # JSON string
+    output: NotRequired[Optional[str]]
+    error: NotRequired[Optional[str]]
+    status: NotRequired[MCPToolCallStatus]
+    approval_request_id: NotRequired[Optional[str]]
+
+
+class MCPListToolsTool(TypedDict):
+    """A tool available on an MCP server."""
+    name: str
+    description: Optional[str]
+    input_schema: Dict[str, Any]  # The JSON schema describing the tool's input
+    annotations: Optional[Dict[str, Any]]
+
+
+class MCPListTools(TypedDict):
+    """A list of tools available on an MCP server."""
+    type: Literal["mcp_list_tools"]
+    id: str
+    server_label: str
+    tools: List[MCPListToolsTool]
+    error: Optional[str]
+
+
+class MCPToolFilter(TypedDict):
+    """A filter object to specify which tools are allowed."""
+    tool_names: NotRequired[List[str]]
+    read_only: NotRequired[bool]
+
+
+class MCPToolApprovalFilter(TypedDict, total=False):
+    """Specify which of the MCP server's tools require approval based on filters."""
+    always: MCPToolFilter
+    never: MCPToolFilter
+
+
+class MCPTool(TypedDict):
+    """
+    Give the model access to additional tools via remote Model Context Protocol (MCP) servers.
+    """
+    # The type of the MCP tool. Always `mcp`.
+    type: Literal["mcp"]
+    # A label for this MCP server, used to identify it in tool calls.
+    server_label: str
+    # The URL for the MCP server. One of `server_url` or `connector_id` must be provided.
+    server_url: NotRequired[str]
+    connector_id: NotRequired[MCPConnectorID]
+    authorization: NotRequired[str]
+    server_description: NotRequired[str]
+    headers: NotRequired[Optional[Dict[str, str]]]
+    # List of allowed tool names or a filter object.
+    allowed_tools: NotRequired[Optional[Union[List[str], MCPToolFilter]]]
+    # Specify which of the MCP server's tools require approval.
+    require_approval: NotRequired[Optional[Union[Literal["always", "never"], MCPToolApprovalFilter]]]
+    # Whether this MCP tool is deferred and discovered via tool search.
+    defer_loading: NotRequired[bool]
+
+
+# Assistant message
 
 class ChatCompletionRequestAssistantMessageFunctionCall(TypedDict):
-    name: str
     arguments: str
+    name: str
 
 
 class ChatCompletionRequestAssistantMessage(TypedDict):
+    """Messages sent by the model in response to user messages."""
     role: Literal["assistant"]
-    content: NotRequired[str]
+    name: Optional[str]
+    content: NotRequired[Optional[str]]
+    refusal: NotRequired[Optional[str]]
     tool_calls: NotRequired[ChatCompletionMessageToolCalls]
     function_call: NotRequired[
         ChatCompletionRequestAssistantMessageFunctionCall
@@ -252,10 +449,10 @@ class ChatCompletionRequestFunctionMessage(TypedDict):
 
 
 ChatCompletionRequestMessage = Union[
+    ChatCompletionRequestDeveloperMessage,
     ChatCompletionRequestSystemMessage,
     ChatCompletionRequestUserMessage,
     ChatCompletionRequestAssistantMessage,
-    ChatCompletionRequestUserMessage,
     ChatCompletionRequestToolMessage,
     ChatCompletionRequestFunctionMessage,
 ]
@@ -283,6 +480,16 @@ class ChatCompletionTool(TypedDict):
     function: ChatCompletionToolFunction
 
 
+class ChatCompletionAllowedTools(TypedDict):
+    mode: Literal["auto", "required"]
+    tools: List[Dict[str, Any]]
+
+
+class ChatCompletionAllowedToolsChoice(TypedDict):
+    type: Literal["allowed_tools"]
+    allowed_tools: ChatCompletionAllowedTools
+
+
 class ChatCompletionNamedToolChoiceFunction(TypedDict):
     name: str
 
@@ -292,8 +499,20 @@ class ChatCompletionNamedToolChoice(TypedDict):
     function: ChatCompletionNamedToolChoiceFunction
 
 
+class ChatCompletionNamedToolChoiceCustomObject(TypedDict):
+    name: str
+
+
+class ChatCompletionNamedToolChoiceCustom(TypedDict):
+    type: Literal["custom"]
+    custom: ChatCompletionNamedToolChoiceCustomObject
+
+
 ChatCompletionToolChoiceOption = Union[
-    Literal["none", "auto", "required"], ChatCompletionNamedToolChoice
+    Literal["none", "auto", "required"],
+    ChatCompletionAllowedToolsChoice,
+    ChatCompletionNamedToolChoice,
+    ChatCompletionNamedToolChoiceCustom
 ]
 
 

@@ -21,7 +21,7 @@ NORM_MODE_TAXICAB = 1
 NORM_MODE_EUCLIDEAN = 2
 NORM_MODE_PNORM = 6
 
-# TODO: Needs more extensive testing with various embedding and reranking models.
+#  Needs more extensive testing with various embedding and reranking models.
 class LlamaEmbedding(Llama):
     """
     A specialized class for high-performance Text Embedding and Reranking.

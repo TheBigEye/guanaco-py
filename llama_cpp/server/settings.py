@@ -31,7 +31,7 @@ class ModelSettings(BaseSettings):
         description="The number of layers to put on the GPU. The rest will be on the CPU. Set -1 to move all to GPU.",
     )
     split_mode: int = Field(
-        default=llama_cpp.LLAMA_SPLIT_MODE_LAYER,
+        default=llama_cpp.llama_split_mode.LLAMA_SPLIT_MODE_LAYER,
         description="The split mode to use.",
     )
     main_gpu: int = Field(
@@ -152,15 +152,6 @@ class ModelSettings(BaseSettings):
         default=64,
         ge=0,
         description="Last n tokens to keep for repeat penalty calculation.",
-    )
-    # LoRA Params
-    lora_base: Optional[str] = Field(
-        default=None,
-        description="Optional path to base model, useful if using a quantized base model and you want to apply LoRA to an f16 model.",
-    )
-    lora_path: Optional[str] = Field(
-        default=None,
-        description="Path to a LoRA file to apply to the model.",
     )
     # Backend Params
     numa: Union[bool, int] = Field(

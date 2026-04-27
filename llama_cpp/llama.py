@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import contextlib
+import ctypes
+import fnmatch
+import json
+import multiprocessing
 import os
 import sys
-import uuid
 import time
-import json
-import ctypes
+import threading
 import typing
-import random
-import fnmatch
+import uuid
 import warnings
-import contextlib
-import multiprocessing
+
+import numpy as np
+import numpy.typing as npt
 
 from typing import (
     Any,
@@ -29,7 +32,6 @@ from typing import (
 from collections import deque
 from pathlib import Path
 
-
 from .llama_types import *
 from .llama_grammar import LlamaGrammar
 from .llama_cache import (
@@ -46,9 +48,6 @@ import llama_cpp.llama_chat_format as llama_chat_format
 
 from llama_cpp.llama_speculative import LlamaDraftModel
 
-import numpy as np
-import numpy.typing as npt
-
 import llama_cpp._internals as internals
 from ._internals import (
     LlamaSamplingContext,
@@ -58,6 +57,19 @@ from ._internals import (
 )
 from ._logger import set_verbose
 from ._utils import suppress_stdout_stderr
+
+
+class AbortCriteria:
+    """
+    Listen for external interruption signals to trigger a stop condition.
+    When an external thread calls `llama.abort()`, a loop interrupt is generated.
+    """
+    def __init__(self, abort_event: threading.Event):
+        self.abort_event = abort_event
+
+    def __call__(self, _input_ids: npt.NDArray[np.intc], _logits: npt.NDArray[np.single]) -> bool:
+        # Note: _input_ids and _logits are required by the signature but unused here.
+        return self.abort_event.is_set()
 
 
 class Llama:
@@ -71,7 +83,7 @@ class Llama:
         *,
         # Model Params
         n_gpu_layers: int = 0,
-        split_mode: int = llama_cpp.LLAMA_SPLIT_MODE_LAYER,
+        split_mode: int = llama_cpp.llama_split_mode.LLAMA_SPLIT_MODE_LAYER,
         main_gpu: int = 0,
         tensor_split: Optional[List[float]] = None,
         vocab_only: bool = False,
@@ -116,10 +128,6 @@ class Llama:
         checkpoint_interval: int = 4096,
         # Sampling Params
         last_n_tokens_size: int = 64,
-        # LoRA Params
-        lora_base: Optional[str] = None,
-        lora_scale: float = 1.0,
-        lora_path: Optional[str] = None,
         # Backend Params
         numa: Union[bool, int] = False,
         # Chat Format Params
@@ -206,8 +214,6 @@ class Llama:
             ctx_checkpoints: max number of context checkpoints to create per slot (default: 16)[(more info)](https://github.com/ggml-org/llama.cpp/pull/15293)
             checkpoint_interval: Hybrid model checkpoint token intervals, and archiving of text with interval sizes along the way.
             last_n_tokens_size: Maximum number of tokens to keep in the last_n_tokens deque.
-            lora_base: Optional path to base model, useful if using a quantized base model and you want to apply LoRA to an f16 model.
-            lora_path: Path to a LoRA file to apply to the model.
             numa: numa policy
             chat_format: String specifying the chat format to use when calling create_chat_completion.
             chat_handler: Optional chat handler to use when calling create_chat_completion.
@@ -270,7 +276,7 @@ class Llama:
             )  # keep a reference to the array so it is not gc'd
             self.model_params.tensor_split = self._c_tensor_split
         self.model_params.vocab_only = vocab_only
-        self.model_params.use_mmap = use_mmap if lora_path is None else False
+        self.model_params.use_mmap = use_mmap
         self.model_params.use_direct_io = use_direct_io
         self.model_params.use_mlock = use_mlock
         self.model_params.check_tensors = check_tensors
@@ -416,34 +422,20 @@ class Llama:
 
         self.cache: Optional[BaseLlamaCache] = None
 
-        self.lora_base = lora_base
-        self.lora_scale = lora_scale
-        self.lora_path = lora_path
-
         self.spm_infill = spm_infill
 
         if not os.path.exists(model_path):
             raise ValueError(f"Model path does not exist: {model_path}")
 
-        try:
-            self._model = self._stack.enter_context(
-                contextlib.closing(
-                    internals.LlamaModel(
-                        path_model=self.model_path,
-                        params=self.model_params,
-                        verbose=self.verbose,
-                    )
+        self._model = self._stack.enter_context(
+            contextlib.closing(
+                internals.LlamaModel(
+                    path_model=self.model_path,
+                    params=self.model_params,
+                    verbose=self.verbose,
                 )
             )
-
-        except RuntimeError as e:
-            if "No such file or directory" in str(e):
-                raise FileNotFoundError(
-                    f"Model file not found at '{self.model_path}'. "
-                    "Make sure the .gguf model file exists at the given path."
-                ) from e
-            else:
-                raise
+        )
 
         # Check for Encoder-Decoder architecture
         self._has_encoder = self._model.has_encoder()
@@ -489,15 +481,22 @@ class Llama:
         _is_recurrent = self._model.is_recurrent()
         _is_hybrid = self._model.is_hybrid()
         _n_swa = self._model.n_swa()
+        # Sync llama.cpp upstream (#20291): warn swa-full is not supported for non-SWA models.
+        if _n_swa == 0:
+            if (self.context_params.swa_full):
+                self.context_params.swa_full = False
+                if self.verbose:
+                    print("Llama.__init__: swa_full is not supported by this model, it will be disabled", file=sys.stderr)
+
         # checkpoints are created only if:
         # - the model uses SWA and we are not using `swa_full`
         # - the model architecture is marked as recurrent or hybrid
-        self.is_hybrid = _is_recurrent or _is_hybrid or (_n_swa > 0 and not swa_full)
+        self.is_hybrid = _is_recurrent or _is_hybrid or (_n_swa > 0 and not self.context_params.swa_full)
 
         if self.is_hybrid:
             if self.verbose:
                 print(f"Llama.__init__: Hybrid/Recurrent model detected."
-                      f"(is_recurrent: {_is_recurrent}, is_hybrid: {_is_hybrid}, n_swa: {_n_swa}, swa_full: {swa_full}). "
+                      f"(is_recurrent: {_is_recurrent}, is_hybrid: {_is_hybrid}, n_swa: {_n_swa}, swa_full: {self.context_params.swa_full}). "
                       f" Enabling HybridCheckpointCache(ctx_checkpoints={ctx_checkpoints}, checkpoint_interval={checkpoint_interval}).",
                       file=sys.stderr)
             self.ctx_checkpoints = ctx_checkpoints
@@ -516,34 +515,6 @@ class Llama:
                 )
             )
         )
-
-        self._lora_adapter: Optional[llama_cpp.llama_adapter_lora_p] = None
-
-        if self.lora_path:
-            self._lora_adapter = llama_cpp.llama_adapter_lora_init(
-                self._model.model,
-                self.lora_path.encode("utf-8"),
-            )
-            if self._lora_adapter is None:
-                raise RuntimeError(
-                    f"Failed to initialize LoRA adapter from lora path: {self.lora_path}"
-                )
-
-            def free_lora_adapter():
-                if self._lora_adapter is None:
-                    return
-                llama_cpp.llama_adapter_lora_free(self._lora_adapter)
-                self._lora_adapter = None
-
-            self._stack.callback(free_lora_adapter)
-
-            # TODO: The current LoRa loading logic is outdated and needs to be refactored.
-            if llama_cpp.llama_set_adapters_lora(
-                self._ctx.ctx, self._lora_adapter, self.lora_scale
-            ):
-                raise RuntimeError(
-                    f"Failed to set LoRA adapter from lora path: {self.lora_path}"
-                )
 
         if self.verbose:
             print(llama_cpp.llama_print_system_info().decode("utf-8"), file=sys.stderr)
@@ -664,6 +635,9 @@ class Llama:
 
         self._sampling_ctx: Optional[LlamaSamplingContext] = None
 
+        # Create a thread-safe interrupt event
+        self._abort_event = threading.Event()
+
     def close(self) -> None:
         """Explicitly free the model from memory."""
         if getattr(self, "_sampling_ctx", None) is not None:
@@ -729,6 +703,29 @@ class Llama:
             maxlen=self._n_ctx if self._logits_all else 1,
         )
 
+    # LoRA / Adapter Management API
+
+    def load_lora(self, name: str, path: str):
+        """Loads a LoRA adapter into VRAM without applying it yet."""
+        self._model.load_lora(name, path)
+
+    def unload_lora(self, name: str):
+        """Actively unloads a specific LoRA to free up VRAM."""
+        self._model.unload_lora(name)
+
+    @property
+    def loaded_lora_count(self) -> int:
+        """Returns the total number of LoRA adapters currently loaded in VRAM."""
+        return self._model.loaded_lora_count
+
+    def list_loras(self) -> List[str]:
+        """Returns a list of all registered LoRA names."""
+        return self._model.list_loras()
+
+    def unload_all_loras(self):
+        """Iterates through the registry and forces VRAM release for all loaded LoRAs."""
+        self._model.unload_all_loras()
+
     def tokenize(
         self, text: bytes, add_bos: bool = True, special: bool = False
     ) -> List[int]:
@@ -787,14 +784,26 @@ class Llama:
         """Reset the model state."""
         self.n_tokens = 0
 
-    def eval(self, tokens: Sequence[int]):
+    def abort(self) -> None:
+        """
+        Safely aborts any ongoing text generation.
+        Useful for async API environments or UI interruption buttons.
+        """
+        if self.verbose:
+            print(f"Llama.abort: Abort signal received. Terminating generation...", file=sys.stderr)
+        self._abort_event.set()
+
+    def eval(
+            self,
+            tokens: Sequence[int],
+            active_loras: Optional[List[Dict[str, Union[str, float]]]] = None,
+            control_vector: Optional[Dict[str, Any]] = None,
+    ):
         """Evaluate a list of tokens.
 
         Args:
             tokens: The list of tokens to evaluate.
         """
-        if len(tokens) == 0:
-            return
         n_eval = len(tokens)
         if n_eval == 0:
             return
@@ -892,6 +901,38 @@ class Llama:
                 seq_ids=[0],
                 logits_array=logits_array
             )
+
+            # JIT Dynamic LoRAs Weights Mounting
+
+            # Dynamic LoRA Routing
+            if active_loras is not None:
+                adapters_to_apply = []
+                for lora in active_loras:
+                    name = lora.get("name")
+                    scale = float(lora.get("scale", 1.0))
+                    adapter_obj = getattr(self._model, "_lora_registry", {}).get(name)
+                    if adapter_obj:
+                        adapters_to_apply.append((adapter_obj, scale))
+                    elif self.verbose:
+                        print(f"Llama.eval: Warning! LoRA '{name}' not found in registry. Skipping.", file=sys.stderr)
+
+                self._ctx.apply_loras(adapters_to_apply)
+            else:
+                # Crucial Fallback: Wipe the graph clean if no LoRAs are requested.
+                # This guarantees zero weight contamination between different users/slots in a multiplexed environment.
+                self._ctx.clear_loras()
+
+            # Dynamic Control Vector (CVec) Injection
+            if control_vector is not None:
+                data = control_vector.get("data", [])
+                il_start = control_vector.get("layer_start", 1)
+                il_end = control_vector.get("layer_end", self.n_layer())
+                n_embd = self.n_embd()
+
+                self._ctx.apply_cvec(data, n_embd, il_start, il_end)
+            else:
+                # Ensure the control vector is cleared for a clean state
+                self._ctx.clear_cvec()
 
             # Dynamic Batch Downgrade: Attempt to decode, reduce batch size if KV cache is fragmented
             current_batch_size = n_chunk
@@ -1029,6 +1070,7 @@ class Llama:
         grammar: Optional[LlamaGrammar] = None, # optional BNF-like grammar to constrain sampling
         grammar_lazy: bool = False,
         idx: Optional[int] = None,
+        seed: Optional[int] = None,
     ):
         """Sample a token from the model.
         Returns:
@@ -1050,6 +1092,7 @@ class Llama:
                 temp=temp,
                 top_n_sigma=top_n_sigma,
                 min_keep=min_keep,
+                seed=seed if seed is not None else self._seed,
 
                 # Dynamic Temp
                 dynatemp_range=dynatemp_range,
@@ -1156,7 +1199,10 @@ class Llama:
         logits_processor: Optional[LogitsProcessorList] = None,
         stopping_criteria: Optional[StoppingCriteriaList] = None,
         grammar: Optional[LlamaGrammar] = None,
-        grammar_lazy :bool = False,
+        grammar_lazy: bool = False,
+        seed: Optional[int] = None,
+        active_loras: Optional[List[Dict[str, Union[str, float]]]] = None,
+        control_vector: Optional[Dict[str, Any]] = None,
     ) -> Generator[int, Optional[Sequence[int]], None]:
         """Create a generator of tokens from a prompt.
 
@@ -1167,12 +1213,49 @@ class Llama:
             ...     print(llama.detokenize([token]))
 
         Args:
-            tokens: The prompt tokens.
-            top_k: The top-k sampling parameter.
-            top_p: The top-p sampling parameter.
-            temp: The temperature parameter.
-            repeat_penalty: The repeat penalty parameter.
-            reset: Whether to reset the model state.
+            tokens: The prompt tokens to evaluate.
+            top_k: Limit the next token selection to the K most probable tokens. (<=0 to use vocab size)
+            top_p: Nucleus sampling. Limits selection to a cumulative probability of P.
+            min_p: Minimum P sampling. Drops tokens with a probability less than min_p relative to the most likely token.
+            typical_p: Locally typical sampling. (1.0 = disabled)
+            temp: Temperature. Controls randomness. (<=0.0 greedy, 0.0 no probabilities)
+            dynatemp_range: Range of dynamic temperature.
+            dynatemp_exponent: Exponent of dynamic temperature.
+            top_n_sigma: Limit selection to tokens within n * sigma of the max logit. (-1.0 = disabled)
+            min_keep: Minimum tokens to keep for sampling.
+            penalty_last_n: Last n tokens to penalize (0 = disable penalty, -1 = context size).
+            repeat_penalty: General penalty for repeated tokens. (1.0 = disabled)
+            frequency_penalty: Penalty based on the absolute frequency of a token in the prompt.
+            present_penalty: Flat penalty applied if a token is present anywhere in the context.
+            reset: If True, attempts to automatically match the KV cache prefix to avoid re-evaluation. If False, blindly appends tokens to existing context.
+            mirostat_mode: Mirostat sampling mode (0 = disabled, 1 = Mirostat, 2 = Mirostat 2.0).
+            mirostat_tau: Target cross-entropy (surprisal) for Mirostat.
+            mirostat_eta: Learning rate for Mirostat.
+            xtc_threshold: Minimum probability threshold for XTC token removal.
+            xtc_probability: Chance for token removal in XTC sampling.
+            dry_multiplier: DRY (Don't Repeat Yourself) repetition penalty multiplier (0.0 = disabled).
+            dry_base: DRY repetition penalty base value.
+            dry_allowed_length: DRY maximum allowed sequence length without penalty.
+            dry_penalty_last_n: DRY tokens to scan for repetitions (0 = disabled, -1 = context size).
+            dry_seq_breakers: Array of sequence breakers for DRY sampling.
+            adaptive_target: Adaptive-p target probability (0.0 to 1.0, negative = disabled).
+            adaptive_decay: Adaptive-p decay rate (0.0 to 0.99).
+            use_infill: Activate specialized fill-in-the-middle sampler.
+            ignore_eos: If True, ignore the End-of-Sequence token.
+            logit_bias: Dictionary mapping token IDs to their bias values.
+            logits_processor: List of custom Python callbacks to modify logits in-place.
+            stopping_criteria: List of custom callbacks to halt generation dynamically.
+            grammar: Optional BNF-like grammar (GBNF) to constrain sampling syntax.
+            grammar_lazy: If True, activates grammar constraints only on specific trigger tokens.
+            seed: RNG seed for sampling. Overrides the instance seed.
+            active_loras: A list of dictionaries specifying the LoRA adapters to dynamically apply during generation.
+                Each dictionary must contain a "name" key (matching a LoRA previously loaded into VRAM via `load_lora()`)
+                and an optional "scale" key (float, defaults to 1.0).
+                Example: `[{"name": "role_A", "scale": 0.85}, {"name": "role_B", "scale": 0.5}]`.
+            control_vector: A dictionary containing Control Vector (CVec) data for representation engineering.
+                Must contain a "data" key with a flattened 1D list of floats.
+                Optionally accepts "layer_start" (int, defaults to 1) and "layer_end" (int, defaults to the model's total layer count).
+                Note: The length of the "data" list MUST be at least `n_embd * layer_end`, with zero-padding for any skipped early layers.
 
         Yields:
             The generated tokens.
@@ -1181,7 +1264,7 @@ class Llama:
         # Check for kv cache prefix match
         if reset and self.n_tokens > 0:
             # 1. First, check for a 100% exact match of the entire sequence
-            full_match_prefix = self.longest_token_prefix(self._input_ids, tokens)
+            full_match_prefix = self.longest_token_prefix(self._input_ids, tokens, self.verbose)
 
             # --- FAST PATH: Zero-latency bypass for Hybrid Single-Turn & Multimodal ---
             # If the cache is disabled (max_checkpoints <= 0) and we have a 100% match,
@@ -1204,7 +1287,7 @@ class Llama:
             else:
                 # By matching against `tokens[:-1]`, we intentionally drop the last token.
                 # This forces the engine to re-evaluate the final token to refresh sampling logits.
-                longest_prefix = self.longest_token_prefix(self._input_ids, tokens[:-1])
+                longest_prefix = self.longest_token_prefix(self._input_ids, tokens[:-1], self.verbose)
 
                 if longest_prefix > 0:
                     reset = False
@@ -1259,12 +1342,14 @@ class Llama:
                                     f"remaining {len(tokens)} prompt tokens to eval",
                                     file=sys.stderr,
                                 )
-        else:
+        if reset:
             # No prefix matched at all. Completely clear the KV cache to prevent context poisoning.
             self.n_tokens = 0
             self._ctx.memory_clear(True)
             if self.is_hybrid and self._hybrid_cache_mgr is not None:
                 self._hybrid_cache_mgr.clear()
+            if self.verbose:
+                print("Llama.generate: Context reset requested or no prefix match. Cleared KV cache.", file=sys.stderr)
 
         # Reset mirostat sampling
         params = LlamaSamplingParams(
@@ -1312,8 +1397,10 @@ class Llama:
             logit_bias=self._convert_logit_bias(logit_bias),
             grammar=grammar._grammar if grammar else "",
             grammar_lazy=grammar_lazy,
+            seed=seed if seed is not None else self._seed,
         )
 
+        # Register custom python-level logits processors if provided
         if logits_processor:
             def adapter(token_data_array: llama_cpp.llama_token_data_array):
                 if self._logits_all:
@@ -1335,6 +1422,7 @@ class Llama:
             if CommonSamplerType.CUSTOM not in params.samplers:
                 params.samplers.insert(3, CommonSamplerType.CUSTOM)
 
+        # Free previous sampling context to prevent memory leaks
         if getattr(self, "_sampling_ctx", None) is not None:
             self._sampling_ctx.close()
             self._sampling_ctx = None
@@ -1344,7 +1432,7 @@ class Llama:
         sample_idx = self.n_tokens + len(tokens) - 1
         tokens = list(tokens)
 
-        # Eval and sample
+        # Main evaluation and generation loop
         try:
             while True:
                 if len(tokens) > 0:
@@ -1361,7 +1449,7 @@ class Llama:
                         last_token = [tokens[-1]]
 
                         # 1. Evaluate up to N-1
-                        self.eval(body_tokens)
+                        self.eval(body_tokens, active_loras=active_loras, control_vector=control_vector)
 
                         # 2. Save the N-1 state snapshot
                         current_history = self._input_ids[:self.n_tokens].tolist()
@@ -1371,40 +1459,39 @@ class Llama:
                             seq_id=0
                         )
                         # 3. Evaluate the final token to refresh logits
-                        self.eval(last_token)
+                        self.eval(last_token, active_loras=active_loras, control_vector=control_vector)
                     else:
                         # Standard evaluation or single-token generation step
-                        self.eval(tokens)
+                        self.eval(tokens, active_loras=active_loras, control_vector=control_vector)
+
+                # Sample loop
                 while sample_idx < self.n_tokens:
+                    if self._abort_event.is_set():
+                        return
+
                     token = self._sampling_ctx.sample(self._ctx, idx=-1)
                     self._sampling_ctx.accept(token, False if grammar is None else True)
 
                     sample_idx += 1
 
                     if stopping_criteria is not None:
-                        if self._logits_all:
-                            logits_idx = sample_idx - self.n_tokens
-                            check_stopping = True
-                        else:
-                            if sample_idx == self.n_tokens:
-                                logits_idx = 0
-                                check_stopping = True
-                            else:
-                                check_stopping = False
-
-                        if check_stopping and stopping_criteria(
+                        if stopping_criteria(
                             self._input_ids[: sample_idx],
-                            self._scores[logits_idx, :]
+                            self._scores[0 if not self._logits_all else sample_idx - self.n_tokens, :]
                         ):
                             return
 
+                    # Yield the generated token to the caller
                     tokens_or_none = yield token
+
                     tokens.clear()
                     tokens.append(token)
 
                     if tokens_or_none is not None:
                         tokens.extend(tokens_or_none)
 
+                    # Rollback Check: A previously evaluated token (e.g. from speculative decoding)
+                    # mismatched the newly sampled token. We must rollback the KV cache.
                     if sample_idx < self.n_tokens and token != self._input_ids[sample_idx]:
                         self.n_tokens = sample_idx
                         if self.is_hybrid:
@@ -1419,10 +1506,13 @@ class Llama:
                                     self._ctx.memory_clear(True)
                                     self.n_tokens = 0
                         else:
+                            if self.verbose:
+                                print(f"Llama.generate: Draft token rejected. Truncating context to {self.n_tokens}.", file=sys.stderr)
                             self._ctx.memory_seq_rm(0, self.n_tokens, -1)
 
                         break
 
+                # Speculative Decoding (Draft Model) logic
                 if self.draft_model is not None:
                     if self.is_hybrid:
                         if self.verbose:
@@ -1438,6 +1528,7 @@ class Llama:
                             ]
                         )
         finally:
+            # Ensure the final state is checkpointed for hybrid models when generation finishes or is interrupted
             if (
                 self.is_hybrid
                 and self._hybrid_cache_mgr is not None
@@ -1645,7 +1736,6 @@ class Llama:
         dynatemp_exponent: float = 1.0,
         min_keep: int = 0,
         stream: bool = False,
-        seed: Optional[int] = None,
         mirostat_mode: int = 0,
         mirostat_tau: float = 5.0,
         mirostat_eta: float = 0.1,
@@ -1664,11 +1754,16 @@ class Llama:
         logit_bias: Optional[Dict[int, float]] = None,
         logits_processor: Optional[LogitsProcessorList] = None,
         grammar: Optional[LlamaGrammar] = None,
-        grammar_lazy: bool = False
+        grammar_lazy: bool = False,
+        seed: Optional[int] = None,
+        active_loras: Optional[List[Dict[str, Union[str, float]]]] = None,
+        control_vector: Optional[Dict[str, Any]] = None,
     ) -> Union[
         Iterator[CreateCompletionResponse], Iterator[CreateCompletionStreamResponse]
     ]:
         assert suffix is None or suffix.__class__ is str
+        # Each time a new request is initiated, the previous abort state must be cleared.
+        self._abort_event.clear()
 
         completion_id: str = f"cmpl-{str(uuid.uuid4())}"
         created: int = int(time.time())
@@ -1795,10 +1890,10 @@ class Llama:
             try:
                 cache_item = self.cache[prompt_tokens]
                 cache_prefix_len = Llama.longest_token_prefix(
-                    cache_item.input_ids, prompt_tokens
+                    cache_item.input_ids, prompt_tokens, self.verbose
                 )
                 eval_prefix_len = Llama.longest_token_prefix(
-                    self._input_ids, prompt_tokens
+                    self._input_ids, prompt_tokens, self.verbose
                 )
                 if cache_prefix_len > eval_prefix_len:
                     self.load_state(cache_item)
@@ -1808,10 +1903,10 @@ class Llama:
                 if self.verbose:
                     print("Llama._create_completion: cache miss", file=sys.stderr)
 
-        if seed is not None:
-            self.set_seed(seed)
+        if stopping_criteria is None:
+            stopping_criteria = StoppingCriteriaList([AbortCriteria(self._abort_event)])
         else:
-            self.set_seed(random.Random(self._seed).randint(0, 2 ** 32))
+            stopping_criteria.append(AbortCriteria(self._abort_event))
 
         finish_reason = "length"
         multibyte_fix = 0
@@ -1848,10 +1943,18 @@ class Llama:
             logits_processor=logits_processor,
             grammar=grammar,
             grammar_lazy=grammar_lazy,
+            seed=seed if seed is not None else self._seed,
+            active_loras=active_loras,
+            control_vector=control_vector,
         ):
             if llama_cpp.llama_token_is_eog(self._model.vocab, token):
                 text = self.detokenize(completion_tokens, prev_tokens=prompt_tokens)
                 finish_reason = "stop"
+                break
+
+            if self._abort_event.is_set():
+                text = self.detokenize(completion_tokens, prev_tokens=prompt_tokens)
+                finish_reason = "abort"
                 break
 
             completion_tokens.append(token)
@@ -2032,6 +2135,11 @@ class Llama:
         ):
             text = self.detokenize(completion_tokens, prev_tokens=prompt_tokens)
             finish_reason = "stop"
+
+        # If the abort is triggered externally, force the `finish_reason` to be changed to "abort".
+        if self._abort_event.is_set():
+            text = self.detokenize(completion_tokens, prev_tokens=prompt_tokens)
+            finish_reason = "abort"
 
         if self.verbose:
             self._ctx.print_timings()
@@ -2300,6 +2408,8 @@ class Llama:
         logits_processor: Optional[LogitsProcessorList] = None,
         grammar: Optional[LlamaGrammar] = None,
         grammar_lazy: bool = False,
+        active_loras: Optional[List[Dict[str, Union[str, float]]]] = None,
+        control_vector: Optional[Dict[str, Any]] = None,
     ) -> Union[CreateCompletionResponse, Iterator[CreateCompletionStreamResponse]]:
         """Generate text from a prompt.
 
@@ -2344,6 +2454,14 @@ prompt: The prompt to generate text from.
             logits_processor: A list of logits processors to use.
             grammar: A grammar to use for constrained sampling.
             grammar_lazy: If True, enables lazy evaluation.
+            active_loras: A list of dictionaries specifying the LoRA adapters to dynamically apply during generation.
+                Each dictionary must contain a "name" key (matching a LoRA previously loaded into VRAM via `load_lora()`)
+                and an optional "scale" key (float, defaults to 1.0).
+                Example: `[{"name": "role_A", "scale": 0.85}, {"name": "role_B", "scale": 0.5}]`.
+            control_vector: A dictionary containing Control Vector (CVec) data for representation engineering.
+                Must contain a "data" key with a flattened 1D list of floats.
+                Optionally accepts "layer_start" (int, defaults to 1) and "layer_end" (int, defaults to the model's total layer count).
+                Note: The length of the "data" list MUST be at least `n_embd * layer_end`, with zero-padding for any skipped early layers.
 
         Raises:
             ValueError: If the requested tokens exceed the context window.
@@ -2393,6 +2511,8 @@ prompt: The prompt to generate text from.
             logits_processor=logits_processor,
             grammar=grammar,
             grammar_lazy=grammar_lazy,
+            active_loras=active_loras,
+            control_vector=control_vector,
         )
         if stream:
             chunks: Iterator[CreateCompletionStreamResponse] = completion_or_chunks
@@ -2442,6 +2562,8 @@ prompt: The prompt to generate text from.
         logits_processor: Optional[LogitsProcessorList] = None,
         grammar: Optional[LlamaGrammar] = None,
         grammar_lazy: bool = False,
+        active_loras: Optional[List[Dict[str, Union[str, float]]]] = None,
+        control_vector: Optional[Dict[str, Any]] = None,
     ) -> Union[CreateCompletionResponse, Iterator[CreateCompletionStreamResponse]]:
         """Generate text from a prompt.
 
@@ -2486,6 +2608,14 @@ prompt: The prompt to generate text from.
             logits_processor: A list of logits processors to use.
             grammar: A grammar to use for constrained sampling.
             grammar_lazy: If True, enables lazy evaluation.
+            active_loras: A list of dictionaries specifying the LoRA adapters to dynamically apply during generation.
+                Each dictionary must contain a "name" key (matching a LoRA previously loaded into VRAM via `load_lora()`)
+                and an optional "scale" key (float, defaults to 1.0).
+                Example: `[{"name": "role_A", "scale": 0.85}, {"name": "role_B", "scale": 0.5}]`.
+            control_vector: A dictionary containing Control Vector (CVec) data for representation engineering.
+                Must contain a "data" key with a flattened 1D list of floats.
+                Optionally accepts "layer_start" (int, defaults to 1) and "layer_end" (int, defaults to the model's total layer count).
+                Note: The length of the "data" list MUST be at least `n_embd * layer_end`, with zero-padding for any skipped early layers.
 
         Raises:
             ValueError: If the requested tokens exceed the context window.
@@ -2535,6 +2665,8 @@ prompt: The prompt to generate text from.
             logits_processor=logits_processor,
             grammar=grammar,
             grammar_lazy=grammar_lazy,
+            active_loras=active_loras,
+            control_vector=control_vector,
         )
 
     def create_chat_completion(
@@ -2580,8 +2712,11 @@ prompt: The prompt to generate text from.
         logits_processor: Optional[LogitsProcessorList] = None,
         grammar: Optional[LlamaGrammar] = None,
         grammar_lazy: bool = False,
+        active_loras: Optional[List[Dict[str, Union[str, float]]]] = None,
+        control_vector: Optional[Dict[str, Any]] = None,
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
+        assistant_prefill: bool = False,
     ) -> Union[
         CreateChatCompletionResponse, Iterator[CreateChatCompletionStreamResponse]
     ]:
@@ -2629,6 +2764,14 @@ prompt: The prompt to generate text from.
             logits_processor: A list of logits processors to use.
             grammar: A grammar to use.
             grammar_lazy: If True, enables lazy evaluation.
+            active_loras: A list of dictionaries specifying the LoRA adapters to dynamically apply during generation.
+                Each dictionary must contain a "name" key (matching a LoRA previously loaded into VRAM via `load_lora()`)
+                and an optional "scale" key (float, defaults to 1.0).
+                Example: `[{"name": "role_A", "scale": 0.85}, {"name": "role_B", "scale": 0.5}]`.
+            control_vector: A dictionary containing Control Vector (CVec) data for representation engineering.
+                Must contain a "data" key with a flattened 1D list of floats.
+                Optionally accepts "layer_start" (int, defaults to 1) and "layer_end" (int, defaults to the model's total layer count).
+                Note: The length of the "data" list MUST be at least `n_embd * layer_end`, with zero-padding for any skipped early layers.
 
         Returns:
             Generated chat completion or a stream of chat completion chunks.
@@ -2683,6 +2826,9 @@ prompt: The prompt to generate text from.
             logits_processor=logits_processor,
             grammar=grammar,
             grammar_lazy=grammar_lazy,
+            active_loras=active_loras,
+            control_vector=control_vector,
+            assistant_prefill=assistant_prefill,
         )
 
     def create_chat_completion_openai_v1(
@@ -2761,10 +2907,6 @@ prompt: The prompt to generate text from.
             # Sampling Params
             no_perf=self.context_params.no_perf,
             last_n_tokens_size=self.last_n_tokens_size,
-            # LoRA Params
-            lora_base=self.lora_base,
-            lora_scale=self.lora_scale,
-            lora_path=self.lora_path,
             # Backend Params
             numa=self.numa,
             # Chat Format Params
@@ -2955,7 +3097,8 @@ prompt: The prompt to generate text from.
     @staticmethod
     def longest_token_prefix(
         current_ids: Union[Sequence[int], npt.NDArray[np.intc]],
-        new_tokens: Union[Sequence[int], npt.NDArray[np.intc]]
+        new_tokens: Union[Sequence[int], npt.NDArray[np.intc]],
+        verbose: bool = False
     ) -> int:
         """
         Calculates the length of the longest common prefix between two token sequences.
@@ -2967,12 +3110,19 @@ prompt: The prompt to generate text from.
         Args:
             current_ids: The existing token sequence (e.g., KV cache).
             new_tokens: The new input token sequence.
+            verbose: If True, prints detailed debug information to stderr.
 
         Returns:
             int: The number of matching tokens from the start.
         """
         # Fast exit for empty sequences to avoid unnecessary processing
         if len(current_ids) == 0 or len(new_tokens) == 0:
+            if verbose:
+                print(
+                    f"Llama.longest_token_prefix [Fast Exit 1]: Empty sequence detected. "
+                    f"len(current_ids)={len(current_ids)}, len(new_tokens)={len(new_tokens)}",
+                    file=sys.stderr
+                )
             return 0
 
         # Determine the comparison range (limited by the shorter sequence)
@@ -2981,6 +3131,12 @@ prompt: The prompt to generate text from.
         # Probe inspection: Use Python to quickly compare the first token
         # If the tokens are different from the beginning, return immediately to avoid any NumPy overhead.
         if current_ids[0] != new_tokens[0]:
+            if verbose:
+                print(
+                    f"Llama.longest_token_prefix [Fast Exit 2]: First token mismatch. "
+                    f"current_ids[0]={current_ids[0]} vs new_tokens[0]={new_tokens[0]}",
+                    file=sys.stderr
+                )
             return 0
 
         # Accelerating SIMD for Large Data Volumes
@@ -3018,8 +3174,8 @@ prompt: The prompt to generate text from.
         **kwargs: Any,
     ) -> "Llama":
         """Create a Llama model from a pretrained model name or path.
-        This method requires the huggingface-hub package.
-        You can install it with `pip install huggingface-hub`.
+        This method requires the huggingface_hub package.
+        You can install it with `pip install --upgrade huggingface_hub`.
 
         Args:
             repo_id: The model repo id.
@@ -3037,7 +3193,7 @@ prompt: The prompt to generate text from.
         except ImportError:
             raise ImportError(
                 "Llama.from_pretrained requires the huggingface-hub package. "
-                "You can install it with `pip install huggingface-hub`."
+                "You can install it with `pip install --upgrade huggingface_hub`."
             )
 
         validate_repo_id(repo_id)

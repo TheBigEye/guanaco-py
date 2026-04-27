@@ -82,15 +82,68 @@ class mtmd_input_chunk_type(enum.IntEnum):
 mtmd_context_p = NewType("mtmd_context_p", int)
 mtmd_context_p_ctypes = c_void_p
 
-# struct mtmd_bitmap;
+# // represents raw image data, layout is RGBRGBRGB...
+# // length of data must be nx * ny * 3
+# struct mtmd_bitmap {
+#     uint32_t nx;
+#     uint32_t ny;
+#     std::vector<unsigned char> data;
+#     std::string id; // optional user-defined id, for ex: can be set to image hash, useful for KV cache tracking
+#     bool is_audio = false; // true if the bitmap is audio
+# };
 mtmd_bitmap_p = NewType("mtmd_bitmap_p", int)
 mtmd_bitmap_p_ctypes = c_void_p
 
-# struct mtmd_image_tokens;
+# // position indexing for decoder model
+# enum mtmd_pos_type {
+#     MTMD_POS_TYPE_NORMAL, // number of positions equals to number of tokens
+#     MTMD_POS_TYPE_MROPE, // qwen-vl mrope style, each image takes max(t,h,w) position indexes
+# };
+class mtmd_pos_type(enum.IntEnum):
+    MTMD_POS_TYPE_NORMAL = 0  # number of positions equals to number of tokens
+    MTMD_POS_TYPE_MROPE  = 1  # qwen-vl mrope style, each image takes max(t,h,w) position indexes
+
+# struct mtmd_image_tokens {
+#     uint32_t nx; // number of tokens in x direction
+#     uint32_t ny; // number of tokens in y direction
+#     mtmd_pos_type pos = MTMD_POS_TYPE_NORMAL;
+#     uint32_t n_tokens() const { return nx * ny; }
+#     clip_image_f32_batch batch_f32; // preprocessed image patches
+#     std::string id; // optional user-defined ID, useful for KV cache tracking
+#     mtmd_image_tokens clone() {
+#         return mtmd_image_tokens{
+#             nx,
+#             ny,
+#             use_mrope_pos,
+#             batch_f32.clone(),
+#             id
+#         };
+#     }
+# };
 mtmd_image_tokens_p = NewType("mtmd_image_tokens_p", int)
 mtmd_image_tokens_p_ctypes = c_void_p
 
-# struct mtmd_input_chunk;
+# struct mtmd_audio_tokens {
+#     uint32_t n_tokens; // number of tokens
+#     clip_image_f32_batch batch_f32; // preprocessed image patches
+#     std::string id; // optional user-defined ID, useful for KV cache tracking
+#     mtmd_audio_tokens clone() {
+#         return mtmd_audio_tokens{
+#             n_tokens,
+#             batch_f32.clone(),
+#             id
+#         };
+#     }
+# };
+mtmd_audio_tokens_p = NewType("mtmd_audio_tokens_p", int)
+mtmd_audio_tokens_p_ctypes = c_void_p
+
+# struct mtmd_input_chunk {
+#     mtmd_input_chunk_type type;
+#     std::vector<llama_token> tokens_text;
+#     mtmd_image_tokens_ptr tokens_image;
+#     mtmd_audio_tokens_ptr tokens_audio;
+# };
 mtmd_input_chunk_p = NewType("mtmd_input_chunk_p", int)
 mtmd_input_chunk_p_ctypes = c_void_p
 
@@ -225,39 +278,44 @@ def mtmd_free(ctx: mtmd_context_p):
     ...
 
 # // whether we need to set non-causal mask before llama_decode
-# MTMD_API bool mtmd_decode_use_non_causal(mtmd_context * ctx);
+# // if chunk is nullptr, we assume the default case where chunk is an image chunk
+# MTMD_API bool mtmd_decode_use_non_causal(const mtmd_context * ctx, const mtmd_input_chunk * chunk);
 @ctypes_function_mtmd(
-    "mtmd_decode_use_non_causal", [mtmd_context_p_ctypes], c_bool)
-def mtmd_decode_use_non_causal(ctx: mtmd_context_p) -> c_bool:
+    "mtmd_decode_use_non_causal", [mtmd_context_p_ctypes, mtmd_input_chunk_p_ctypes], c_bool)
+def mtmd_decode_use_non_causal(ctx: mtmd_context_p, chunk: mtmd_input_chunk_p) -> c_bool:
     ...
 
 # // whether the current model use M-RoPE for llama_decode
-# MTMD_API bool mtmd_decode_use_mrope(mtmd_context * ctx);
+# MTMD_API bool mtmd_decode_use_mrope(const mtmd_context * ctx);
 @ctypes_function_mtmd(
     "mtmd_decode_use_mrope", [mtmd_context_p_ctypes], c_bool)
 def mtmd_decode_use_mrope(ctx: mtmd_context_p) -> c_bool:
     ...
 
 # // whether the current model supports vision input
-# MTMD_API bool mtmd_support_vision(mtmd_context * ctx);
+# MTMD_API bool mtmd_support_vision(const mtmd_context * ctx);
 @ctypes_function_mtmd(
     "mtmd_support_vision", [mtmd_context_p_ctypes], c_bool)
 def mtmd_support_vision(ctx: mtmd_context_p) -> c_bool:
     ...
 
 # // whether the current model supports audio input
-# MTMD_API bool mtmd_support_audio(mtmd_context * ctx);
+# MTMD_API bool mtmd_support_audio(const mtmd_context * ctx);
 @ctypes_function_mtmd(
     "mtmd_support_audio", [mtmd_context_p_ctypes], c_bool)
 def mtmd_support_audio(ctx: mtmd_context_p) -> c_bool:
     ...
 
-# // get audio bitrate in Hz, for example 16000 for Whisper
+# // get audio sample rate in Hz, for example 16000 for Whisper
 # // return -1 if audio is not supported
-# MTMD_API int mtmd_get_audio_bitrate(mtmd_context * ctx);
+# MTMD_API int mtmd_get_audio_sample_rate(const mtmd_context * ctx);
 @ctypes_function_mtmd(
-    "mtmd_get_audio_bitrate", [mtmd_context_p_ctypes], c_int)
-def mtmd_get_audio_bitrate(ctx: mtmd_context_p) -> c_int:
+    "mtmd_get_audio_sample_rate", [mtmd_context_p_ctypes], c_int)
+def mtmd_get_audio_sample_rate(ctx: mtmd_context_p) -> c_int:
+    """
+    get audio sample rate in Hz, for example 16000 for Whisper
+    return -1 if audio is not supported
+    """
     ...
 
 # // mtmd_bitmap
@@ -297,7 +355,7 @@ def mtmd_bitmap_init(
 )
 def mtmd_bitmap_init_from_audio(
     n_samples: c_uint,
-    data: POINTER(c_float),
+    data: POINTER(c_float), # type: ignore
     /,
 ) -> mtmd_bitmap_p:
     ...
@@ -483,18 +541,6 @@ def mtmd_input_chunk_free(chunk: mtmd_input_chunk_p):
 def mtmd_image_tokens_get_n_tokens(image_tokens: mtmd_image_tokens_p) -> c_size_t:
     ...
 
-# MTMD_API size_t       mtmd_image_tokens_get_nx      (const mtmd_image_tokens * image_tokens);
-@ctypes_function_mtmd(
-    "mtmd_image_tokens_get_nx", [mtmd_image_tokens_p_ctypes], c_size_t)
-def mtmd_image_tokens_get_nx(image_tokens: mtmd_image_tokens_p) -> c_size_t:
-    ...
-
-# MTMD_API size_t       mtmd_image_tokens_get_ny      (const mtmd_image_tokens * image_tokens);
-@ctypes_function_mtmd(
-    "mtmd_image_tokens_get_ny", [mtmd_image_tokens_p_ctypes], c_size_t)
-def mtmd_image_tokens_get_ny(image_tokens: mtmd_image_tokens_p) -> c_size_t:
-    ...
-
 # MTMD_API const char * mtmd_image_tokens_get_id      (const mtmd_image_tokens * image_tokens); // TODO: deprecate
 @ctypes_function_mtmd(
     "mtmd_image_tokens_get_id", [mtmd_image_tokens_p_ctypes], c_char_p)
@@ -507,6 +553,62 @@ def mtmd_image_tokens_get_id(image_tokens: mtmd_image_tokens_p) -> c_char_p:
     "mtmd_image_tokens_get_n_pos", [mtmd_image_tokens_p_ctypes], c_int32)
 def mtmd_image_tokens_get_n_pos(image_tokens: mtmd_image_tokens_p) -> c_int32:
     """number of temporal positions (equals to max(t,h,w) for M-RoPE; equals to n_tokens otherwise)"""
+    ...
+
+# DEPRECATED(MTMD_API size_t mtmd_image_tokens_get_nx(const mtmd_image_tokens * image_tokens),
+#            "use mtmd_image_tokens_get_decoder_pos() instead");
+@ctypes_function_mtmd(
+    "mtmd_image_tokens_get_nx", [mtmd_image_tokens_p_ctypes], c_size_t)
+def mtmd_image_tokens_get_nx(image_tokens: mtmd_image_tokens_p) -> c_size_t:
+    """
+    use mtmd_image_tokens_get_decoder_pos() instead
+    """
+    ...
+
+# DEPRECATED(MTMD_API size_t mtmd_image_tokens_get_ny(const mtmd_image_tokens * image_tokens),
+#            "use mtmd_image_tokens_get_decoder_pos() instead");
+@ctypes_function_mtmd(
+    "mtmd_image_tokens_get_ny", [mtmd_image_tokens_p_ctypes], c_size_t)
+def mtmd_image_tokens_get_ny(image_tokens: mtmd_image_tokens_p) -> c_size_t:
+    """
+    use mtmd_image_tokens_get_decoder_pos() instead
+    """
+    ...
+
+# struct mtmd_decoder_pos {
+#     uint32_t t;
+#     uint32_t x;
+#     uint32_t y;
+# };
+class mtmd_decoder_pos(Structure):
+    _fields_ = [
+        ("t", c_uint32),
+        ("x", c_uint32),
+        ("y", c_uint32),
+    ]
+
+    if TYPE_CHECKING:
+        t: c_uint32
+        x: c_uint32
+        y: c_uint32
+
+mtmd_decoder_pos_p = POINTER(mtmd_decoder_pos)
+mtmd_decoder_pos_p_ctypes = c_void_p
+
+# // get position for decoder attention, to be used by M-RoPE models
+# // i is the index of the embedding token, ranging from 0 to mtmd_image_tokens_get_n_tokens() - 1
+# // pos_0 is the absolute position of the first token
+# // return relative position (for example, embedding 0 will have position (0, 0, 0); remember to adjust it to the current absolute position)
+# MTMD_API struct mtmd_decoder_pos mtmd_image_tokens_get_decoder_pos(const mtmd_image_tokens * image_tokens, llama_pos pos_0, size_t i);
+@ctypes_function_mtmd(
+    "mtmd_image_tokens_get_decoder_pos", [mtmd_image_tokens_p_ctypes, c_int32, c_size_t], mtmd_decoder_pos)
+def mtmd_image_tokens_get_decoder_pos(image_tokens: mtmd_image_tokens_p, pos_0: c_int32, i: c_size_t) -> mtmd_decoder_pos:
+    """
+    get position for decoder attention, to be used by M-RoPE models
+    i is the index of the embedding token, ranging from 0 to mtmd_image_tokens_get_n_tokens() - 1
+    pos_0 is the absolute position of the first token
+    return relative position (for example, embedding 0 will have position (0, 0, 0); remember to adjust it to the current absolute position)
+    """
     ...
 
 # // tokenize an input text prompt and a list of bitmaps (images/audio)
@@ -544,7 +646,7 @@ def mtmd_tokenize(
     ctx: mtmd_context_p,
     output: mtmd_input_chunks_p,
     text: mtmd_input_text_p,
-    bitmaps: POINTER(mtmd_bitmap_p),
+    bitmaps: POINTER(mtmd_bitmap_p), # type: ignore
     n_bitmaps: c_uint,
     /,
 ) -> c_int32:
@@ -602,7 +704,7 @@ def mtmd_encode_chunk(
 # MTMD_API float * mtmd_get_output_embd(mtmd_context * ctx);
 @ctypes_function_mtmd(
     "mtmd_get_output_embd", [mtmd_context_p_ctypes], POINTER(c_float))
-def mtmd_get_output_embd(ctx: mtmd_context_p) -> POINTER(c_float):
+def mtmd_get_output_embd(ctx: mtmd_context_p) -> POINTER(c_float): # type: ignore
     """
     get output embeddings from the last encode pass
     """
@@ -614,7 +716,7 @@ def mtmd_get_output_embd(ctx: mtmd_context_p) -> POINTER(c_float):
 # MTMD_API void mtmd_log_set(ggml_log_callback log_callback, void * user_data);
 @ctypes_function_mtmd(
     "mtmd_log_set", [ggml_log_callback, c_void_p], None)
-def mtmd_log_set(log_callback: ggml_log_callback, user_data: c_void_p):
+def mtmd_log_set(log_callback: ggml_log_callback, user_data: c_void_p): # type: ignore
     """
     Set callback for all future logging events.
     """
@@ -646,7 +748,7 @@ def mtmd_test_create_input_chunks() -> mtmd_input_chunk_p:
 # MTMD_API void mtmd_helper_log_set(ggml_log_callback log_callback, void * user_data);
 @ctypes_function_mtmd(
     "mtmd_helper_log_set", [ggml_log_callback, c_void_p], None)
-def mtmd_helper_log_set(log_callback: ggml_log_callback, user_data: c_void_p):
+def mtmd_helper_log_set(log_callback: ggml_log_callback, user_data: c_void_p): # type: ignore
     """
     Set callback for all future logging events.
     """
@@ -721,6 +823,27 @@ def mtmd_helper_get_n_pos(chunks: mtmd_input_chunk_p) -> c_int32:
     ...
 
 
+# // helper to get the list of relative positions corresponding to the embedding tokens, to be used by M-RoPE
+# // out_pos must have length == mtmd_helper_get_n_tokens(image)
+# MTMD_API void mtmd_helper_image_get_decoder_pos(const mtmd_image_tokens * image, llama_pos pos_0, struct mtmd_decoder_pos * out_pos);
+@ctypes_function_mtmd("mtmd_helper_image_get_decoder_pos", [
+                        mtmd_image_tokens_p_ctypes,
+                        c_int32,
+                        mtmd_decoder_pos_p_ctypes
+                    ],
+                    None)
+def mtmd_helper_image_get_decoder_pos(
+    image: mtmd_image_tokens_p,
+    pos_0: c_int32,
+    out_pos: mtmd_decoder_pos_p # type: ignore
+) -> c_int32:
+    """
+    helper to get the list of relative positions corresponding to the embedding tokens, to be used by M-RoPE
+    out_pos must have length == mtmd_helper_get_n_tokens(image)
+    """
+    ...
+
+
 # // helper function that automatically:
 # // 1. run llama_decode() on text chunks
 # // 2. run mtmd_encode() on image chunks, then mtmd_get_output_embd() and then llama_decode()
@@ -755,7 +878,7 @@ def mtmd_helper_eval_chunks(
     seq_id: c_int32,
     n_batch: c_int32,
     logits_last: c_bool,
-    new_n_past: POINTER(c_int32),
+    new_n_past: POINTER(c_int32), # type: ignore
     /,
 ) -> c_int32:
     """
@@ -798,7 +921,7 @@ def mtmd_helper_eval_chunk_single(
     seq_id: c_int32,
     n_batch: c_int32,
     logits_last: c_bool,
-    new_n_past: POINTER(c_int32),
+    new_n_past: POINTER(c_int32), # type: ignore
     /,
 ) -> c_int32:
     """
@@ -834,7 +957,7 @@ def mtmd_helper_decode_image_chunk(
     ctx: mtmd_context_p,
     lctx: llama_cpp.llama_context_p,
     chunks: mtmd_input_chunk_p,
-    encoded_embd: POINTER(c_float),
+    encoded_embd: POINTER(c_float), # type: ignore
     n_past: c_int32,
     seq_id: c_int32,
     n_batch: c_int32,

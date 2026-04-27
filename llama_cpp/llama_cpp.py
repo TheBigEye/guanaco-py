@@ -191,7 +191,8 @@ LLAMA_VOCAB_TYPE_PLAMO2 = 6
 #     LLAMA_VOCAB_PRE_TYPE_QWEN35          = 46,
 #     LLAMA_VOCAB_PRE_TYPE_TINY_AYA        = 47,
 #     LLAMA_VOCAB_PRE_TYPE_JOYAI_LLM       = 48,
-#.    LLAMA_VOCAB_PRE_TYPE_JAIS2           = 49,
+#     LLAMA_VOCAB_PRE_TYPE_JAIS2           = 49,
+#     LLAMA_VOCAB_PRE_TYPE_GEMMA4          = 50,
 # };
 LLAMA_VOCAB_PRE_TYPE_DEFAULT = 0
 LLAMA_VOCAB_PRE_TYPE_LLAMA3 = 1
@@ -209,7 +210,7 @@ LLAMA_VOCAB_PRE_TYPE_OLMO = 12
 LLAMA_VOCAB_PRE_TYPE_DBRX = 13
 LLAMA_VOCAB_PRE_TYPE_SMAUG = 14
 LLAMA_VOCAB_PRE_TYPE_PORO = 15
-LLAMA_VOCAV_PRE_TYPE_CHATGLM3 = 16
+LLAMA_VOCAB_PRE_TYPE_CHATGLM3 = 16
 LLAMA_VOCAB_PRE_TYPE_CHATGLM4 = 17
 LLAMA_VOCAB_PRE_TYPE_VIKING = 18
 LLAMA_VOCAB_PRE_TYPE_JAIS = 19
@@ -243,6 +244,7 @@ LLAMA_VOCAB_PRE_TYPE_QWEN35 = 46
 LLAMA_VOCAB_PRE_TYPE_TINY_AYA = 47
 LLAMA_VOCAB_PRE_TYPE_JOYAI_LLM = 48
 LLAMA_VOCAB_PRE_TYPE_JAIS2 = 49
+LLAMA_VOCAB_PRE_TYPE_GEMMA4 = 50
 
 
 # // note: these values should be synchronized with ggml_rope
@@ -348,6 +350,8 @@ LLAMA_TOKEN_ATTR_SINGLE_WORD = 1 << 9
 #     LLAMA_FTYPE_MOSTLY_TQ1_0         = 36, // except 1d tensors
 #     LLAMA_FTYPE_MOSTLY_TQ2_0         = 37, // except 1d tensors
 #     LLAMA_FTYPE_MOSTLY_MXFP4_MOE     = 38, // except 1d tensors
+#     LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
+#     LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
 #
 #     LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
 # };
@@ -387,6 +391,8 @@ LLAMA_FTYPE_MOSTLY_BF16 = 32
 LLAMA_FTYPE_MOSTLY_TQ1_0 = 36
 LLAMA_FTYPE_MOSTLY_TQ2_0 = 37
 LLAMA_FTYPE_MOSTLY_MXFP4_MOE = 38
+LLAMA_FTYPE_MOSTLY_NVFP4 = 39
+LLAMA_FTYPE_MOSTLY_Q1_0 = 40
 LLAMA_FTYPE_GUESSED = 1024
 
 # enum llama_rope_scaling_type {
@@ -454,14 +460,16 @@ def llama_flash_attn_type_name(
     """
 
 # enum llama_split_mode {
-#     LLAMA_SPLIT_MODE_NONE  = 0, // single GPU
-#     LLAMA_SPLIT_MODE_LAYER = 1, // split layers and KV across GPUs
-#     LLAMA_SPLIT_MODE_ROW   = 2, // split rows across GPUs
+#     LLAMA_SPLIT_MODE_NONE   = 0, // single GPU
+#     LLAMA_SPLIT_MODE_LAYER  = 1, // split layers and KV across GPUs
+#     LLAMA_SPLIT_MODE_ROW    = 2, // split layers and KV across GPUs, use tensor parallelism if supported
+#     LLAMA_SPLIT_MODE_TENSOR = 3,
 # };
-LLAMA_SPLIT_MODE_NONE = 0
-LLAMA_SPLIT_MODE_LAYER = 1
-LLAMA_SPLIT_MODE_ROW = 2
-
+class llama_split_mode(enum.IntEnum):
+    LLAMA_SPLIT_MODE_NONE   = 0
+    LLAMA_SPLIT_MODE_LAYER  = 1
+    LLAMA_SPLIT_MODE_ROW    = 2
+    LLAMA_SPLIT_MODE_TENSOR = 3
 
 # typedef struct llama_token_data {
 #     llama_token id; // token id
@@ -674,6 +682,8 @@ class llama_model_kv_override(ctypes.Structure):
         tag: int
         key: bytes
         value: Union[int, float, bool, bytes]
+
+llama_model_kv_override_p = ctypes.POINTER(llama_model_kv_override)
 
 # struct llama_model_tensor_buft_override {
 #     const char * pattern;
@@ -972,38 +982,60 @@ class llama_context_params(ctypes.Structure):
 
 llama_context_params_p = ctypes.POINTER(llama_context_params)
 
-# // Signature for logging events
-# // Note that text includes the new line character at the end for most events.
-# // If your logging mechanism cannot handle that, check if the last character is '\n' and strip it
-# // if it exists.
-# // It might not exist for progress report where '.' is output repeatedly.
-# typedef void (*llama_log_callback)(enum llama_log_level level, const char * text, void * user_data);
-llama_log_callback = ctypes.CFUNCTYPE(
-    None, ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p
-)
-"""Signature for logging events
-Note that text includes the new line character at the end for most events.
-If your logging mechanism cannot handle that, check if the last character is '\n' and strip it
-if it exists.
-It might not exist for progress report where '.' is output repeatedly."""
+
+# struct llama_model_tensor_override {
+#     const char * pattern;
+#     enum ggml_type type;
+# };
+class llama_model_tensor_override(ctypes.Structure):
+    _fields_ = [
+        ("pattern", ctypes.c_char_p),
+        ("type", ctypes.c_int),
+    ]
+
+    if TYPE_CHECKING:
+        pattern: ctypes.c_char_p
+        type: ctypes.c_int
+
+llama_model_tensor_override_p = ctypes.POINTER(llama_model_tensor_override)
+
+
+# struct llama_model_imatrix_data {
+#     const char * name;
+#     const float * data;
+#     size_t size;
+# };
+class llama_model_imatrix_data(ctypes.Structure):
+    _fields_ = [
+        ("name", ctypes.c_char_p),
+        ("data", ctypes.POINTER(ctypes.c_float)),
+        ("size", ctypes.c_size_t),
+    ]
+
+    if TYPE_CHECKING:
+        name: ctypes.c_char_p
+        data: ctypes.POINTER(ctypes.c_float) # type: ignore
+        size: ctypes.c_size_t
+
+llama_model_imatrix_data_p = ctypes.POINTER(llama_model_imatrix_data)
 
 
 # // model quantization parameters
 # typedef struct llama_model_quantize_params {
-#     int32_t nthread;                      // number of threads to use for quantizing, if <=0 will use std::thread::hardware_concurrency()
-#     enum llama_ftype ftype;               // quantize to this llama_ftype
-#     enum ggml_type output_tensor_type;    // output tensor type
-#     enum ggml_type token_embedding_type;  // token embeddings tensor type
-#     bool allow_requantize;                // allow quantizing non-f32/f16 tensors
-#     bool quantize_output_tensor;          // quantize output.weight
-#     bool only_copy;                       // only copy tensors - ftype, allow_requantize and quantize_output_tensor are ignored
-#     bool pure;                            // quantize all tensors to the default type
-#     bool keep_split;                      // quantize to the same number of shards
-#     bool dry_run;                         // calculate and show the final quantization size without performing quantization
-#     void * imatrix;                       // pointer to importance matrix data
-#     void * kv_overrides;                  // pointer to vector containing overrides
-#     void * tensor_types;                  // pointer to vector containing tensor types
-#     void * prune_layers;                  // pointer to vector containing layer indices to prune
+#     int32_t nthread;                                            // number of threads to use for quantizing, if <=0 will use std::thread::hardware_concurrency()
+#     enum llama_ftype ftype;                                     // quantize to this llama_ftype
+#     enum ggml_type output_tensor_type;                          // output tensor type
+#     enum ggml_type token_embedding_type;                        // token embeddings tensor type
+#     bool allow_requantize;                                      // allow quantizing non-f32/f16 tensors
+#     bool quantize_output_tensor;                                // quantize output.weight
+#     bool only_copy;                                             // only copy tensors - ftype, allow_requantize and quantize_output_tensor are ignored
+#     bool pure;                                                  // quantize all tensors to the default type
+#     bool keep_split;                                            // quantize to the same number of shards
+#     bool dry_run;                                               // calculate and show the final quantization size without performing quantization
+#     const struct llama_model_imatrix_data * imatrix;            // pointer to importance matrix data
+#     const struct llama_model_kv_override * kv_overrides;        // pointer to kv overrides
+#     const struct llama_model_tensor_override * tt_overrides;    // pointer to tensor overrides
+#     const int32_t * prune_layers;                               // pointer to layer indices to prune
 # } llama_model_quantize_params;
 class llama_model_quantize_params(ctypes.Structure):
     """Parameters for llama_model_quantize
@@ -1019,10 +1051,10 @@ class llama_model_quantize_params(ctypes.Structure):
         pure (bool): quantize all tensors to the default type
         keep_split (bool): quantize to the same number of shards
         dry_run (bool): calculate and show the final quantization size without performing quantization
-        imatrix (ctypes.c_void_p): pointer to importance matrix data
-        kv_overrides (ctypes.c_void_p): pointer to vector containing overrides
-        tensor_types (ctypes.c_void_p): pointer to vector containing tensor types
-        prune_layers (ctypes.c_void_p): pointer to vector containing layer indices to prune
+        imatrix (POINTER(llama_model_imatrix_data)): Pointer to importance matrix data.
+        kv_overrides (POINTER(llama_model_kv_override)): Pointer to KV overrides.
+        tt_overrides (POINTER(llama_model_tensor_override)): Pointer to tensor overrides.
+        prune_layers (POINTER(c_int32)): Pointer to layer indices to prune.
     """
 
     if TYPE_CHECKING:
@@ -1036,10 +1068,10 @@ class llama_model_quantize_params(ctypes.Structure):
         pure: bool
         keep_split: bool
         dry_run: bool
-        imatrix: ctypes.c_void_p
-        kv_overrides: ctypes.c_void_p
-        tensor_types: ctypes.c_void_p
-        prune_layers: ctypes.c_void_p
+        imatrix: ctypes.POINTER(llama_model_imatrix_data) # type: ignore
+        kv_overrides: ctypes.POINTER(llama_model_kv_override) # type: ignore
+        tensor_types: ctypes.POINTER(llama_model_tensor_override) # type: ignore
+        prune_layers: ctypes.POINTER(ctypes.c_int32) # type: ignore
 
     _fields_ = [
         ("nthread", ctypes.c_int32),
@@ -1052,10 +1084,10 @@ class llama_model_quantize_params(ctypes.Structure):
         ("pure", ctypes.c_bool),
         ("keep_split", ctypes.c_bool),
         ("dry_run", ctypes.c_bool),
-        ("imatrix", ctypes.c_void_p),
-        ("kv_overrides", ctypes.c_void_p),
-        ("tensor_types", ctypes.c_void_p),
-        ("prune_layers", ctypes.c_void_p),
+        ("imatrix", ctypes.POINTER(llama_model_imatrix_data)),
+        ("kv_overrides", ctypes.POINTER(llama_model_kv_override)),
+        ("tt_overrides", ctypes.POINTER(llama_model_tensor_override)),
+        ("prune_layers", ctypes.POINTER(ctypes.c_int32)),
     ]
 
 
@@ -1113,9 +1145,62 @@ class llama_chat_message(ctypes.Structure):
 
 
 # // lora adapter
-# struct llama_adapter_lora;
+# struct llama_adapter_lora {
+#     llama_model * model = nullptr;
+
+#     // map tensor name to lora_a_b
+#     std::unordered_map<std::string, llama_adapter_lora_weight> ab_map;
+
+#     std::vector<ggml_context_ptr> ctxs;
+#     std::vector<ggml_backend_buffer_ptr> bufs;
+
+#     float alpha;
+
+#     // gguf metadata
+#     std::unordered_map<std::string, std::string> gguf_kv;
+
+#     // activated lora (aLoRA)
+#     std::vector<llama_token> alora_invocation_tokens;
+
+#     explicit llama_adapter_lora(llama_model * model) : model(model) {}
+#     ~llama_adapter_lora() = default;
+
+#     llama_adapter_lora_weight * get_weight(ggml_tensor * w);
+
+#     uint32_t get_n_nodes() const {
+#         return ab_map.size() * 6u; // a, b, scale, add, 2 x mul_mat
+#     }
+# };
 llama_adapter_lora_p = ctypes.c_void_p
 llama_adapter_lora_p_ctypes = ctypes.POINTER(ctypes.c_void_p)
+
+# // llama_adapter_cvec
+# struct llama_adapter_cvec {
+#     ggml_tensor * tensor_for(int il) const;
+
+#     ggml_tensor * apply_to(ggml_context * ctx, ggml_tensor * cur, int  il) const;
+
+#     bool apply(
+#             const llama_model & model,
+#             const float * data,
+#             size_t len,
+#             int32_t n_embd,
+#             int32_t il_start,
+#             int32_t il_end);
+
+# private:
+#     bool init(const llama_model & model);
+
+#     int32_t layer_start = -1;
+#     int32_t layer_end   = -1;
+
+#     std::vector<ggml_context_ptr> ctxs;
+#     std::vector<ggml_backend_buffer_ptr> bufs;
+
+#     std::vector<ggml_tensor *> tensors; // per layer
+# };
+llama_adapter_cvec_p = ctypes.c_void_p
+llama_adapter_cvec_p_ctypes = ctypes.POINTER(ctypes.c_void_p)
 
 
 # // Helpers for getting default parameters
@@ -1232,6 +1317,47 @@ def llama_numa_init(numa: int, /):
 # TODO: Add llama_detach_threadpool
 
 
+# typedef void (*llama_model_set_tensor_data_t)(struct ggml_tensor * tensor, void * userdata);
+llama_model_set_tensor_data_t = ctypes.CFUNCTYPE(
+    None,
+    ctypes.c_void_p,
+    ctypes.c_void_p
+)
+
+
+# // Create a new model from GGUF metadata as well as a function to set the tensor data
+# //   - tensors are created as GGML_TYPE_F32 by default,
+# //     override by adding a tensor with the same name but a different name to the context
+# LLAMA_API struct llama_model * llama_model_init_from_user(
+#                 struct gguf_context * metadata,
+#         llama_model_set_tensor_data_t   set_tensor_data,    // function to initialize tensor data with
+#                                 void * set_tensor_data_ud, // userdata for function
+#             struct llama_model_params   params);
+@ctypes_function(
+    "llama_model_init_from_user",
+    [
+        ctypes.c_void_p,
+        llama_model_set_tensor_data_t,
+        ctypes.c_void_p,
+        llama_model_params
+    ],
+    llama_model_p_ctypes,
+)
+def llama_model_init_from_user(
+    metadata: ctypes.c_void_p,
+    set_tensor_data: llama_model_set_tensor_data_t, # type: ignore
+    set_tensor_data_ud: ctypes.c_void_p,
+    params: llama_model_params,
+    /
+) -> Optional[llama_model_p]:
+    """
+    Create a new model from GGUF metadata as well as a function to set the tensor data
+      - tensors are created as GGML_TYPE_F32 by default,
+        override by adding a tensor with the same name but a different name to the context
+    """
+    ...
+
+
 # DEPRECATED(LLAMA_API struct llama_model * llama_load_model_from_file(
 #                          const char * path_model,
 #           struct llama_model_params   params),
@@ -1247,7 +1373,7 @@ def llama_load_model_from_file(
     ...
 
 
-# // Load the model from a file
+# // Load a model from a file
 # // If the file is split into multiple parts, the file name must follow this pattern: <name>-%05d-of-%05d.gguf
 # // If the split file name does not follow this pattern, use llama_model_load_from_splits
 # LLAMA_API struct llama_model * llama_model_load_from_file(
@@ -1261,15 +1387,33 @@ def llama_load_model_from_file(
 def llama_model_load_from_file(
     path_model: bytes, params: llama_model_params, /
 ) -> Optional[llama_model_p]:
-    """Load the model from a file
-
+    """
+    Load a model from a file
     If the file is split into multiple parts, the file name must follow this pattern: <name>-%05d-of-%05d.gguf
-
-    If the split file name does not follow this pattern, use llama_model_load_from_splits"""
+    If the split file name does not follow this pattern, use llama_model_load_from_splits
+    """
     ...
 
 
-# // Load the model from multiple splits (support custom naming scheme)
+# // Load a model from an open FILE pointer
+# LLAMA_API struct llama_model * llama_model_load_from_file_ptr(
+#                                 FILE * file,
+#             struct llama_model_params   params);
+@ctypes_function(
+    "llama_model_load_from_file_ptr",
+    [ctypes.c_void_p, llama_model_params],
+    llama_model_p_ctypes,
+)
+def llama_model_load_from_file_ptr(
+    file: ctypes.c_void_p, params: llama_model_params, /
+) -> Optional[llama_model_p]:
+    """
+    Load a model from an open FILE pointer
+    """
+    ...
+
+
+# // Load a model from multiple splits (support custom naming scheme)
 # // The paths must be in the correct order
 # LLAMA_API struct llama_model * llama_model_load_from_splits(
 #                          const char ** paths,
@@ -1283,9 +1427,10 @@ def llama_model_load_from_file(
 def llama_model_load_from_splits(
     paths: list[bytes], n_paths: int, params: llama_model_params, /
 ) -> Optional[llama_model_p]:
-    """Load the model from multiple splits (support custom naming scheme)
-
-    The paths must be in the correct order"""
+    """
+    Load a model from multiple splits (support custom naming scheme)
+    The paths must be in the correct order
+    """
     ...
 
 
@@ -1372,53 +1517,6 @@ class llama_params_fit_status(enum.IntEnum):
     LLAMA_PARAMS_FIT_STATUS_SUCCESS = 0
     LLAMA_PARAMS_FIT_STATUS_FAILURE = 1
     LLAMA_PARAMS_FIT_STATUS_ERROR   = 2
-
-
-# // fits mparams and cparams to free device memory (assumes system memory is unlimited)
-# //   - returns true if the parameters could be successfully modified to fit device memory
-# //   - this function is NOT thread safe because it modifies the global llama logger state
-# //   - only parameters that have the same value as in llama_default_model_params are modified
-# //     with the exception of the context size which is modified if and only if equal to 0
-# LLAMA_API enum llama_params_fit_status llama_params_fit(
-#                                 const char   * path_model,
-#                 struct llama_model_params   * mparams,
-#                 struct llama_context_params * cparams,
-#                                         float * tensor_split,          // writable buffer for tensor split, needs at least llama_max_devices elements
-#     struct llama_model_tensor_buft_override * tensor_buft_overrides, // writable buffer for overrides, needs at least llama_max_tensor_buft_overrides elements
-#                                         size_t   margin,                // margin of memory to leave per device in bytes
-#                                     uint32_t   n_ctx_min,             // minimum context size to set when trying to reduce memory use
-#                         enum ggml_log_level   log_level);            // minimum log level to print during fitting, lower levels go to debug log
-@ctypes_function(
-    "llama_params_fit",
-    [
-        ctypes.c_char_p,
-        llama_model_params_p,
-        llama_context_params_p,
-        ctypes.POINTER(ctypes.c_float),
-        ctypes.POINTER(llama_model_tensor_buft_override),
-        ctypes.c_size_t,
-        ctypes.c_uint32,
-        ctypes.c_int,
-    ],
-    ctypes.c_int,
-)
-def llama_params_fit(
-    path_model: ctypes.c_char_p,
-    mparams: CtypesPointer[llama_model_params],
-    cparams: CtypesPointer[llama_context_params],
-    tensor_split: CtypesPointer[ctypes.c_float],
-    tensor_buft_overrides: CtypesPointer[llama_model_tensor_buft_override],
-    margin: ctypes.c_size_t,
-    n_ctx_min: ctypes.c_uint32,
-    log_level: int,
-    /,
-) -> int:
-    """
-    fits mparams and cparams to free device memory (assumes system memory is unlimited)
-    returns true if the parameters could be successfully modified to fit device memory
-    this function is NOT thread safe because it modifies the global llama logger state
-    """
-    ...
 
 
 # LLAMA_API int64_t llama_time_us(void);
@@ -1867,9 +1965,12 @@ def llama_model_quantize(
     ...
 
 
+# //
+# // Adapters
+# //
+
 # // Load a LoRA adapter from file
 # // The adapter is valid as long as the associated model is not freed
-# // All adapters must be loaded before context creation
 # LLAMA_API struct llama_adapter_lora * llama_adapter_lora_init(
 #         struct llama_model * model,
 #         const char * path_lora);
@@ -1972,9 +2073,8 @@ def llama_adapter_meta_val_str_by_index(
 
 
 # // Manually free a LoRA adapter
-# // Note: loaded adapters will be free when the associated model is deleted
-# LLAMA_API DEPRECATED(void llama_adapter_lora_free(struct llama_adapter_lora * adapter),
-#         "adapters are now freed together with the associated model");
+# // NOTE: loaded adapters that are not manually freed will be freed when the associated model is deleted
+# LLAMA_API void llama_adapter_lora_free(struct llama_adapter_lora * adapter);
 @ctypes_function(
     "llama_adapter_lora_free",
     [llama_adapter_lora_p_ctypes],
@@ -1999,7 +2099,7 @@ def llama_adapter_get_alora_n_invocation_tokens(adapter: llama_adapter_lora_p, /
 @ctypes_function(
     "llama_adapter_get_alora_invocation_tokens",
     [llama_adapter_lora_p_ctypes],
-    ctypes.c_uint64,
+    ctypes.POINTER(llama_token),
 )
 def llama_adapter_get_alora_invocation_tokens(adapter: llama_adapter_lora_p, /) -> CtypesPointer[llama_token]:
     ...
@@ -2016,14 +2116,23 @@ def llama_adapter_get_alora_invocation_tokens(adapter: llama_adapter_lora_p, /) 
 #         float * scales);
 @ctypes_function(
     "llama_set_adapters_lora",
-    [llama_context_p_ctypes, ctypes.POINTER(llama_adapter_lora_p_ctypes), ctypes.c_size_t, ctypes.c_float],
+    [llama_context_p_ctypes,
+     ctypes.POINTER(llama_adapter_lora_p_ctypes),
+     ctypes.c_size_t,
+     ctypes.POINTER(ctypes.c_float)
+    ],
     ctypes.c_int32,
 )
 def llama_set_adapters_lora(
-    ctx: llama_context_p, adapters: CtypesArray[llama_adapter_lora_p], n_adapters: ctypes.c_size_t, scale: float, /
+    ctx: llama_context_p,
+    adapters: Optional[CtypesArray[llama_adapter_lora_p]],
+    n_adapters: ctypes.c_size_t,
+    scales: Optional[CtypesArray[ctypes.c_float]], /
 ) -> int:
-    """Set LoRa adapters on the context.
-    Will only modify if the adapters currently in context are different."""
+    """
+    Set LoRa adapters on the context.
+    Will only modify if the adapters currently in context are different.
+    """
     ...
 
 
@@ -2982,7 +3091,7 @@ def llama_get_logits(ctx: llama_context_p, /) -> CtypesArray[ctypes.c_float]:
 
 # // Logits for the ith token. For positive indices, Equivalent to:
 # // llama_get_logits(ctx) + ctx->output_ids[i]*n_vocab
-# // Negative indicies can be used to access logits in reverse order, -1 is the last logit.
+# // Negative indices can be used to access logits in reverse order, -1 is the last logit.
 # // returns NULL for invalid ids.
 # LLAMA_API float * llama_get_logits_ith(struct llama_context * ctx, int32_t i);
 @ctypes_function(
@@ -3017,7 +3126,7 @@ def llama_get_embeddings(ctx: llama_context_p, /) -> CtypesArray[ctypes.c_float]
 
 # // Get the embeddings for the ith token. For positive indices, Equivalent to:
 # // llama_get_embeddings(ctx) + ctx->output_ids[i]*n_embd
-# // Negative indicies can be used to access embeddings in reverse order, -1 is the last embedding.
+# // Negative indices can be used to access embeddings in reverse order, -1 is the last embedding.
 # // shape: [n_embd] (1-dimensional)
 # // returns NULL for invalid ids.
 # LLAMA_API float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t i);
@@ -3076,9 +3185,9 @@ def llama_get_sampled_token_ith(
     ...
 
 
-# // Get the backend sampled probabilites for the ith token
+# // Get the backend sampled probabilities for the ith token
 # // The index matches llama_get_sampled_token_ith().
-# // Returns NULL if no probabilites were generated.
+# // Returns NULL if no probabilities were generated.
 # LLAMA_API float *  llama_get_sampled_probs_ith      (struct llama_context * ctx, int32_t i);
 @ctypes_function(
     "llama_get_sampled_probs_ith",
@@ -3089,9 +3198,9 @@ def llama_get_sampled_probs_ith(
     ctx: llama_context_p, i: ctypes.c_int32, /
 ) -> CtypesArray[ctypes.c_float]:
     """
-    Get the backend sampled probabilites for the ith token
+    Get the backend sampled probabilities for the ith token
     The index matches llama_get_sampled_token_ith().
-    Returns NULL if no probabilites were generated.
+    Returns NULL if no probabilities were generated.
     """
     ...
 
@@ -4345,7 +4454,7 @@ def llama_sampler_init_mirostat_v2(
     ...
 
 
-# /// @details Intializes a GBNF grammar, see grammars/README.md for details.
+# /// @details Initializes a GBNF grammar, see grammars/README.md for details.
 # /// @param vocab The vocabulary that this grammar will be used with.
 # /// @param grammar_str The production rules for the grammar, encoded as a string. Returns an empty grammar if empty. Returns NULL if parsing of grammar_str fails.
 # /// @param grammar_root The name of the start symbol for the grammar.
@@ -4392,7 +4501,7 @@ def llama_sampler_init_grammar_lazy_patterns(
     vocab: llama_vocab_p,
     grammar_str: bytes,
     grammar_root: bytes,
-    trigger_patterns: CtypesArray[bytes],
+    trigger_patterns: CtypesArray[bytes], # type: ignore
     num_trigger_patterns: int,
     trigger_tokens: CtypesArray[llama_token],
     num_trigger_tokens: int,
@@ -4647,8 +4756,8 @@ def llama_print_system_info() -> bytes:
     None,
 )
 def llama_log_get(
-    log_callback: Optional[ctypes.pointer(ggml_log_callback)],
-    user_data: ctypes.pointer(ctypes.c_void_p),
+    log_callback: Optional[ctypes.pointer(ggml_log_callback)], # type: ignore
+    user_data: ctypes.pointer(ctypes.c_void_p), # type: ignore
     /,
 ):
     """Get callback for all future logging events.
@@ -4663,7 +4772,7 @@ def llama_log_get(
     None,
 )
 def llama_log_set(
-    log_callback: Optional[ggml_log_callback],
+    log_callback: Optional[ggml_log_callback], # type: ignore
     user_data: ctypes.c_void_p,
     /,
 ):
@@ -4771,17 +4880,6 @@ def llama_perf_sampler_print(chain: llama_sampler_p, /):
     None,
 )
 def llama_perf_sampler_reset(chain: llama_sampler_p, /):
-    ...
-
-
-# // print a breakdown of per-device memory use via LLAMA_LOG:
-# LLAMA_API void llama_memory_breakdown_print(const struct llama_context * ctx);
-@ctypes_function(
-    "llama_memory_breakdown_print",
-    [llama_context_p_ctypes],
-    None,
-)
-def llama_memory_breakdown_print(ctx: llama_context_p, /):
     ...
 
 

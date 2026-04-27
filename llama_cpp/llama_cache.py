@@ -14,9 +14,8 @@ from typing import (
     Tuple,
 )
 
-import llama_cpp.llama
-import llama_cpp._internals as _internals
-import llama_cpp.llama_cpp as llama_cpp
+import llama_cpp.llama as llama_core
+import llama_cpp.llama_cpp as llama_cpp_lib
 
 from .llama_types import *
 
@@ -39,7 +38,7 @@ class BaseLlamaCache(ABC):
         pass
 
     @abstractmethod
-    def __getitem__(self, key: Sequence[int]) -> "llama_cpp.llama.LlamaState":
+    def __getitem__(self, key: Sequence[int]) -> "llama_core.LlamaState":
         raise NotImplementedError
 
     @abstractmethod
@@ -48,78 +47,95 @@ class BaseLlamaCache(ABC):
 
     @abstractmethod
     def __setitem__(
-        self, key: Sequence[int], value: "llama_cpp.llama.LlamaState"
+        self, key: Sequence[int], value: "llama_core.LlamaState"
     ) -> None:
         raise NotImplementedError
 
 
 class LlamaDiskCache(BaseLlamaCache):
-    """Cache for a llama.cpp model using disk."""
+    """
+    Disk cache for a llama.cpp model.
+    Delegates LRU and size management natively to the SQLite-backed `diskcache` library.
+    """
 
     def __init__(
-        self, cache_dir: str = ".cache/llama_cache", capacity_bytes: int = (2 << 30)
+        self, cache_dir: str = ".cache/llama_cache", capacity_bytes: int = (2 << 30), verbose: bool = False
     ):
         super().__init__(capacity_bytes)
-        self.cache = diskcache.Cache(cache_dir)
+        self.cache_dir = cache_dir
+        # Native SQLite size limit and LRU eviction
+        self.cache = diskcache.Cache(cache_dir, size_limit=capacity_bytes)
+        self.verbose = verbose
 
     @property
     def cache_size(self):
-        return int(self.cache.volume())  # type: ignore
+        # Native O(1) volume calculation
+        return self.cache.volume()  # type: ignore
 
     def _find_longest_prefix_key(
         self,
         key: Tuple[int, ...],
     ) -> Optional[Tuple[int, ...]]:
+        # Early exit if cache is empty
+        if len(self.cache) == 0:
+            return None
+
         min_len = 0
         min_key: Optional[Tuple[int, ...]] = None
+        target_len = len(key)
         for k in self.cache.iterkeys():  # type: ignore
-            prefix_len = llama_cpp.llama.Llama.longest_token_prefix(k, key)
+            prefix_len = llama_core.Llama.longest_token_prefix(k, key, self.verbose)
             if prefix_len > min_len:
                 min_len = prefix_len
                 min_key = k  # type: ignore
+            # Perfect match found, break to prevent full-table disk scan
+            if min_len == target_len:
+                break
+
         return min_key
 
-    def __getitem__(self, key: Sequence[int]) -> "llama_cpp.llama.LlamaState":
+    def __getitem__(self, key: Sequence[int]) -> "llama_core.LlamaState":
+        print("LlamaDiskCache.__getitem__: called", file=sys.stderr)
+        if len(self.cache) == 0:
+            raise KeyError("Cache is empty")
+
         key = tuple(key)
         _key = self._find_longest_prefix_key(key)
         if _key is None:
             raise KeyError("Key not found")
-        value: "llama_cpp.llama.LlamaState" = self.cache.pop(_key)  # type: ignore
-        # NOTE: This puts an integer as key in cache, which breaks,
-        # Llama.longest_token_prefix(k, key) above since k is not a tuple of ints/tokens
-        # self.cache.push(_key, side="front")  # type: ignore
+        # Non-destructive read: automatically updates access time for LRU
+        value: "llama_core.LlamaState" = self.cache[_key]  # type: ignore
         return value
 
     def __contains__(self, key: Sequence[int]) -> bool:
+        if len(self.cache) == 0:
+            return False
         return self._find_longest_prefix_key(tuple(key)) is not None
 
-    def __setitem__(self, key: Sequence[int], value: "llama_cpp.llama.LlamaState"):
+    def __setitem__(self, key: Sequence[int], value: "llama_core.LlamaState"):
         print("LlamaDiskCache.__setitem__: called", file=sys.stderr)
-        key = tuple(key)
-        if key in self.cache:
-            print("LlamaDiskCache.__setitem__: delete", file=sys.stderr)
-            del self.cache[key]
-        self.cache[key] = value
-        print("LlamaDiskCache.__setitem__: set", file=sys.stderr)
-        while self.cache_size > self.capacity_bytes and len(self.cache) > 0:
-            key_to_remove = next(iter(self.cache))
-            del self.cache[key_to_remove]
-        print("LlamaDiskCache.__setitem__: trim", file=sys.stderr)
+        # diskcache natively handles capacity check and eviction upon assignment
+        self.cache[tuple(key)] = value
 
 
 class LlamaRAMCache(BaseLlamaCache):
-    """Cache for a llama.cpp model using RAM."""
+    """
+    RAM cache for a llama.cpp model.
+    Maintains an LRU eviction policy with O(1) size tracking.
+    """
 
-    def __init__(self, capacity_bytes: int = (2 << 30)):
+    def __init__(self, capacity_bytes: int = (2 << 30), verbose: bool = False):
         super().__init__(capacity_bytes)
         self.capacity_bytes = capacity_bytes
         self.cache_state: OrderedDict[
-            Tuple[int, ...], "llama_cpp.llama.LlamaState"
+            Tuple[int, ...], "llama_core.LlamaState"
         ] = OrderedDict()
+        self._current_size = 0
+        self.verbose = verbose
 
     @property
     def cache_size(self):
-        return sum([state.llama_state_size for state in self.cache_state.values()])
+        return self._current_size
 
     def _find_longest_prefix_key(
         self,
@@ -128,7 +144,7 @@ class LlamaRAMCache(BaseLlamaCache):
         min_len = 0
         min_key = None
         keys = (
-            (k, llama_cpp.llama.Llama.longest_token_prefix(k, key))
+            (k, llama_core.Llama.longest_token_prefix(k, key, self.verbose))
             for k in self.cache_state.keys()
         )
         for k, prefix_len in keys:
@@ -137,7 +153,10 @@ class LlamaRAMCache(BaseLlamaCache):
                 min_key = k
         return min_key
 
-    def __getitem__(self, key: Sequence[int]) -> "llama_cpp.llama.LlamaState":
+    def __getitem__(self, key: Sequence[int]) -> "llama_core.LlamaState":
+        if not self.cache_state:
+            raise KeyError("Cache is empty")
+
         key = tuple(key)
         _key = self._find_longest_prefix_key(key)
         if _key is None:
@@ -147,15 +166,26 @@ class LlamaRAMCache(BaseLlamaCache):
         return value
 
     def __contains__(self, key: Sequence[int]) -> bool:
+        if not self.cache_state:
+            return False
+
         return self._find_longest_prefix_key(tuple(key)) is not None
 
-    def __setitem__(self, key: Sequence[int], value: "llama_cpp.llama.LlamaState"):
+    def __setitem__(self, key: Sequence[int], value: "llama_core.LlamaState"):
         key = tuple(key)
         if key in self.cache_state:
             del self.cache_state[key]
+
         self.cache_state[key] = value
-        while self.cache_size > self.capacity_bytes and len(self.cache_state) > 0:
-            self.cache_state.popitem(last=False)
+        self._current_size += value.llama_state_size
+
+        while self._current_size > self.capacity_bytes and len(self.cache_state) > 0:
+            _, popped_state = self.cache_state.popitem(last=False)
+            self._current_size -= popped_state.llama_state_size
+            self._current_size = max(0, self._current_size)
+
+        if len(self.cache_state) == 0:
+            self._current_size = 0
 
 
 class TrieNode:
@@ -164,7 +194,7 @@ class TrieNode:
         # Child nodes: {token_id: TrieNode}
         self.children: Dict[int, "TrieNode"] = {}
         # Stores the LlamaState if this node marks the end of a cached sequence.
-        self.state: Optional["llama_cpp.llama.LlamaState"] = None
+        self.state: Optional["llama_core.LlamaState"] = None
 
 
 class LlamaTrieCache(BaseLlamaCache):
@@ -228,7 +258,7 @@ class LlamaTrieCache(BaseLlamaCache):
 
         return longest_prefix_node, longest_prefix_key
 
-    def __getitem__(self, key: Sequence[int]) -> "llama_cpp.llama.LlamaState":
+    def __getitem__(self, key: Sequence[int]) -> "llama_core.LlamaState":
         """
         Retrieves the state for the longest matching prefix in O(K) time.
         Updates the LRU status.
@@ -282,7 +312,7 @@ class LlamaTrieCache(BaseLlamaCache):
                 # Node is still in use, stop pruning
                 break
 
-    def __setitem__(self, key: Sequence[int], value: "llama_cpp.llama.LlamaState"):
+    def __setitem__(self, key: Sequence[int], value: "llama_core.LlamaState"):
         """
         Adds a (key, state) pair to the cache in O(K) time.
         Handles LRU updates and eviction.
@@ -317,7 +347,7 @@ class LlamaTrieCache(BaseLlamaCache):
             self._prune(evicted_key)
 
 # Alias for backwards compatibility
-LlamaCache = LlamaRAMCache
+LlamaCache = LlamaTrieCache
 
 
 @dataclass
@@ -334,7 +364,7 @@ class HybridCheckpointCache(BaseLlamaCache):
     Manager for RNN state snapshots (Checkpoints) tailored for Hybrid/Recurrent models.
     Provides rollback capabilities for models that cannot physically truncate KV cache.
     """
-    def __init__(self, ctx: llama_cpp.llama_context_p, max_checkpoints: int = 16, verbose: bool = False):
+    def __init__(self, ctx: llama_cpp_lib.llama_context_p, max_checkpoints: int = 16, verbose: bool = False):
         if ctx is None:
             raise ValueError("HybridCheckpointCache(__init__): Failed to create HybridCheckpointCache with model context")
         self._ctx = ctx
@@ -343,10 +373,10 @@ class HybridCheckpointCache(BaseLlamaCache):
         self._current_size = 0
 
         # Cache C-type API function pointers for performance
-        self._get_size_ext = llama_cpp.llama_state_seq_get_size_ext
-        self._get_data_ext = llama_cpp.llama_state_seq_get_data_ext
-        self._set_data_ext = llama_cpp.llama_state_seq_set_data_ext
-        self._flag_partial = llama_cpp.LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY
+        self._get_size_ext = llama_cpp_lib.llama_state_seq_get_size_ext
+        self._get_data_ext = llama_cpp_lib.llama_state_seq_get_data_ext
+        self._set_data_ext = llama_cpp_lib.llama_state_seq_set_data_ext
+        self._flag_partial = llama_cpp_lib.LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY
 
         self.verbose = verbose
 
