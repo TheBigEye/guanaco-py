@@ -20,6 +20,9 @@ Python bindings for [@ggerganov's](https://github.com/ggerganov) [`llama.cpp`](h
 > - Plan future custom enhancements and features that may diverge significantly from the original.
 > If you need Metal, macOS, or broader hardware support, please use the original repository: [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python).
 
+> [!NOTE]
+> This fork also contains changes and improvements from [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python).
+
 > **Thanks to Andrei Betlen for the original work!**
 
 > [!NOTE]
