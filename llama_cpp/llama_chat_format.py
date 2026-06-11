@@ -26,6 +26,7 @@ from typing import (
 )
 
 import jinja2
+from jinja2.ext import Extension
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 import numpy as np
@@ -130,6 +131,17 @@ class LlamaChatCompletionHandler(Protocol):
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
         assistant_prefill: bool = False,
+        # Reasoning Budget Params
+        #
+        # Generic first-reasoning-block budget control. These parameters are
+        # passed through to llama.create_completion() without model-specific
+        # inference or template guessing.
+        reasoning_budget: int = -1,
+        reasoning_start: str = "<think>",
+        reasoning_end: str = "</think>",
+        reasoning_budget_message: Optional[str] = None,
+        reasoning_start_in_prompt: bool = False,
+        reasoning_start_max_tokens: Optional[int] = 32,
         **kwargs,  # type: ignore
     ) -> Union[
         llama_types.CreateChatCompletionResponse,
@@ -220,6 +232,46 @@ class ChatFormatter(Protocol):
 
 
 class Jinja2ChatFormatter(ChatFormatter):
+    class IgnoreGenerationTags(Extension):
+        """Render HuggingFace `{% generation %}` blocks without tracking.
+
+        HuggingFace chat templates may wrap assistant text with:
+
+            {% generation %}
+            ...
+            {% endgeneration %}
+
+        Transformers uses this tag to compute assistant-token masks. In
+        llama-cpp-python chat formatting we only need the final rendered prompt,
+        so this extension simply removes the tag pair and renders the inner
+        content as normal Jinja template content.
+
+        This keeps compatibility with HF templates while avoiding the overhead
+        of span tracking.
+
+        More information see:
+        https://github.com/huggingface/transformers/blob/39603d0e5cdb6f00e8d473d7fcbb01032d709181/src/transformers/utils/chat_template_utils.py#L425
+        """
+
+        tags = {"generation"}
+
+        def parse(self, parser: jinja2.parser.Parser):
+            # Consume the opening `{% generation %}` token.
+            lineno = next(parser.stream).lineno
+
+            # Parse and return the block body until `{% endgeneration %}`.
+            # Returning the body directly makes the tag a transparent wrapper.
+            body = parser.parse_statements(
+                ("name:endgeneration",),
+                drop_needle=True,
+            )
+
+            # Preserve line numbers for better template error messages.
+            for node in body:
+                node.set_lineno(lineno)
+
+            return body
+
     def __init__(
         self,
         template: str,
@@ -227,21 +279,118 @@ class Jinja2ChatFormatter(ChatFormatter):
         bos_token: str,
         add_generation_prompt: bool = True,
         stop_token_ids: Optional[List[int]] = None,
+        special_tokens_map: Optional[Dict[str, str]] = None,
     ):
-        """A chat formatter that uses jinja2 templates to format the prompt."""
+        """Format chat messages with a HuggingFace-style Jinja2 chat template.
+
+        Args:
+            template:
+                Raw HuggingFace chat template string.
+            eos_token:
+                Text form of the model EOS token.
+            bos_token:
+                Text form of the model BOS token.
+            add_generation_prompt:
+                Whether to ask the template to append the assistant generation
+                prefix. This mirrors Transformers' `add_generation_prompt`.
+            stop_token_ids:
+                Optional token ids that should stop generation when they appear
+                as the last generated token. This is llama-cpp-python specific.
+            special_tokens_map:
+                Optional tokenizer special-token map. Some HF templates may
+                reference extra variables such as `pad_token`, `unk_token`,
+                `sep_token`, or model-specific special tokens.
+        """
         self.template = template
         self.eos_token = eos_token
         self.bos_token = bos_token
         self.add_generation_prompt = add_generation_prompt
+        self.special_tokens_map = special_tokens_map or {}
+
         self.stop_token_ids = (
-            set(stop_token_ids) if stop_token_ids is not None else None
+            {int(token_id) for token_id in stop_token_ids}
+            if stop_token_ids is not None
+            else None
         )
 
-        self._environment = ImmutableSandboxedEnvironment(
+        environment = ImmutableSandboxedEnvironment(
             loader=jinja2.BaseLoader(),
             trim_blocks=True,
             lstrip_blocks=True,
-        ).from_string(self.template)
+            # Keep this aligned with Transformers' chat-template Jinja setup:
+            # - IgnoreGenerationTags supports `{% generation %}` blocks.
+            # - loopcontrols supports `{% break %}` and `{% continue %}`.
+            extensions=[
+                Jinja2ChatFormatter.IgnoreGenerationTags,
+                jinja2.ext.loopcontrols,
+            ],
+        )
+
+        # Match Transformers' chat-template JSON behavior.
+        # Jinja's default `tojson` escapes HTML characters, which is not what
+        # plain-text chat templates usually expect.
+        environment.filters["tojson"] = self.tojson
+
+        # Register these as globals once instead of passing them on every render.
+        environment.globals["raise_exception"] = self.raise_exception
+        environment.globals["strftime_now"] = self.strftime_now
+
+        self._environment = environment
+        self._template = environment.from_string(self.template)
+
+        # Precompute static stop fields once. This avoids rebuilding closures and
+        # StoppingCriteriaList objects for every chat completion request.
+        self._stop = [self.eos_token] if self.eos_token else []
+        self._stopping_criteria = self._build_stopping_criteria()
+
+    @staticmethod
+    def raise_exception(message: str):
+        """Raise a Jinja template error from inside a chat template."""
+        raise jinja2.exceptions.TemplateError(message)
+
+    @staticmethod
+    def strftime_now(format_string: str = "%Y-%m-%d %H:%M:%S") -> str:
+        """Return the current local time formatted with `datetime.strftime`."""
+        return datetime.datetime.now().strftime(format_string)
+
+    @staticmethod
+    def tojson(
+        x: Any,
+        ensure_ascii: bool = False,
+        indent: Optional[int] = None,
+        separators: Optional[Tuple[str, str]] = None,
+        sort_keys: bool = False,
+    ) -> str:
+        """Serialize an object to JSON for chat-template rendering.
+
+        This intentionally bypasses Jinja's built-in `tojson` filter because
+        the built-in filter escapes HTML-sensitive characters. HuggingFace chat
+        templates expect plain JSON text instead.
+        """
+        return json.dumps(
+            x,
+            ensure_ascii=ensure_ascii,
+            indent=indent,
+            separators=separators,
+            sort_keys=sort_keys,
+        )
+
+    def _build_stopping_criteria(self):
+        """Create stopping criteria once during initialization."""
+        if self.stop_token_ids is None:
+            return None
+
+        stop_token_ids = self.stop_token_ids
+
+        def stop_on_last_token(
+            tokens: npt.NDArray[np.intc],
+            logits: npt.NDArray[np.single],
+        ) -> bool:
+            # Defensive guard: generation normally calls this with at least one
+            # token, but the callback should never crash on empty input.
+            return len(tokens) > 0 and int(tokens[-1]) in stop_token_ids
+
+        return llama_core.StoppingCriteriaList([stop_on_last_token])
 
     def __call__(
         self,
@@ -251,44 +400,106 @@ class Jinja2ChatFormatter(ChatFormatter):
         function_call: Optional[llama_types.ChatCompletionRequestFunctionCall] = None,
         tools: Optional[List[llama_types.ChatCompletionTool]] = None,
         tool_choice: Optional[llama_types.ChatCompletionToolChoiceOption] = None,
+        documents: Optional[List[Dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> ChatFormatterResponse:
-        def raise_exception(message: str):
-            raise ValueError(message)
+        """Render OpenAI-style chat messages into a model prompt.
 
-        def strftime_now(format_string="%Y-%m-%d %H:%M:%S") -> str:
-            """
-            Returns the current time formatted as a string.
-            """
-            return datetime.datetime.now().strftime(format_string)
+        The method builds the variable context expected by HuggingFace-style
+        Jinja chat templates and renders the final prompt string used by
+        llama-cpp-python.
 
-        prompt = self._environment.render(
-            messages=messages,
-            eos_token=self.eos_token,
-            bos_token=self.bos_token,
-            raise_exception=raise_exception,
-            strftime_now=strftime_now,
-            add_generation_prompt=self.add_generation_prompt,
-            functions=functions,
-            function_call=function_call,
-            tools=tools,
-            tool_choice=tool_choice,
+        Template variables provided by default:
+            messages:
+                The chat history to render. Each item is expected to be an
+                OpenAI-style message dictionary, usually containing at least
+                `role` and `content`.
+
+            eos_token:
+                The model's end-of-sequence token string.
+
+            bos_token:
+                The model's beginning-of-sequence token string.
+
+            add_generation_prompt:
+                Whether the template should append the assistant generation
+                prefix. This mirrors Transformers' `add_generation_prompt`.
+
+            functions:
+                Legacy OpenAI-compatible function definitions, if provided.
+
+            function_call:
+                Legacy OpenAI-compatible function-call selection, if provided.
+
+            tools:
+                OpenAI/HuggingFace-compatible tool definitions, if provided.
+                This formatter expects tools to already be normalized into
+                JSON-schema-like dictionaries. It does not auto-convert Python
+                callables into JSON schemas like Transformers can.
+
+            tool_choice:
+                Optional tool-choice instruction, such as `"auto"`, `"none"`,
+                or a specific tool/function selection object.
+
+            documents:
+                Optional RAG/document context. Some HF chat templates reference
+                this variable when rendering retrieval-augmented prompts.
+
+            **kwargs:
+                Extra model-specific or template-specific variables. These are
+                merged into the template context last, so they can intentionally
+                override the defaults above when needed.
+
+        Additional variables:
+            Values from `special_tokens_map` are also exposed to the template,
+            such as `pad_token`, `unk_token`, `sep_token`, or custom
+            model-specific special tokens. Core variables like `messages`,
+            `eos_token`, and `bos_token` override `special_tokens_map` entries
+            by default.
+
+        Returns:
+            ChatFormatterResponse:
+                Contains the rendered prompt, text stop sequences, optional
+                token-id stopping criteria, and `added_special=True` because the
+                chat template is responsible for adding model special tokens.
+
+        Raises:
+            jinja2.exceptions.TemplateError:
+                If the template calls `raise_exception(...)` or Jinja rendering
+                fails.
+        """
+        template_kwargs: Dict[str, Any] = {}
+
+        # Make extra tokenizer special tokens available to templates, e.g.
+        # `pad_token`, `unk_token`, `sep_token`, or model-specific tokens.
+        template_kwargs.update(self.special_tokens_map)
+
+        # Explicit core variables should override values from special_tokens_map.
+        template_kwargs.update(
+            {
+                "messages": messages,
+                "eos_token": self.eos_token,
+                "bos_token": self.bos_token,
+                "add_generation_prompt": self.add_generation_prompt,
+                "functions": functions,
+                "function_call": function_call,
+                "tools": tools,
+                "tool_choice": tool_choice,
+                "documents": documents,
+            }
         )
 
-        stopping_criteria = None
-        if self.stop_token_ids is not None:
+        # Let caller-provided kwargs extend the template context.
+        # If a caller intentionally passes a same-name key, it will override the
+        # defaults above. This is useful for model-specific template variables.
+        template_kwargs.update(kwargs)
 
-            def stop_on_last_token(
-                tokens: npt.NDArray[np.intc], logits: npt.NDArray[np.single]
-            ) -> bool:
-                return tokens[-1] in self.stop_token_ids
-
-            stopping_criteria = llama_core.StoppingCriteriaList([stop_on_last_token])
+        prompt = self._template.render(**template_kwargs)
 
         return ChatFormatterResponse(
             prompt=prompt,
-            stop=[self.eos_token],
-            stopping_criteria=stopping_criteria,
+            stop=self._stop,
+            stopping_criteria=self._stopping_criteria,
             added_special=True,
         )
 
@@ -629,6 +840,17 @@ def chat_formatter_to_chat_completion_handler(
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
         assistant_prefill: bool = False,
+        # Reasoning Budget Params
+        #
+        # Generic first-reasoning-block budget control. These parameters are
+        # passed through to llama.create_completion() without model-specific
+        # inference or template guessing.
+        reasoning_budget: int = -1,
+        reasoning_start: str = "<think>",
+        reasoning_end: str = "</think>",
+        reasoning_budget_message: Optional[str] = None,
+        reasoning_start_in_prompt: bool = False,
+        reasoning_start_max_tokens: Optional[int] = 32,
         **kwargs,  # type: ignore
     ) -> Union[
         llama_types.CreateChatCompletionResponse,
@@ -764,6 +986,12 @@ def chat_formatter_to_chat_completion_handler(
             stopping_criteria=stopping_criteria,
             grammar=grammar,
             logit_bias=logit_bias,
+            reasoning_budget=reasoning_budget,
+            reasoning_start=reasoning_start,
+            reasoning_end=reasoning_end,
+            reasoning_budget_message=reasoning_budget_message,
+            reasoning_start_in_prompt=reasoning_start_in_prompt,
+            reasoning_start_max_tokens=reasoning_start_max_tokens,
         )
         if tool is not None:
             tool_name = tool["function"]["name"]
@@ -2811,21 +3039,20 @@ def functionary_v1_v2_chat_handler(
 
 class MTMDChatHandler:
     DEFAULT_SYSTEM_MESSAGE: Optional[str] = (
-"""You are an exceptionally capable, precise, and helpful multimodal AI assistant that excels at deeply understanding and richly describing images, charts, diagrams, text in images, scenes, and any visual content,
-while also answering every question accurately, clearly, and step-by-step when appropriate — always responding in the same language as the user's question, remaining polite, professional, and maximally helpful."""
+"You are an exceptionally capable, precise, and helpful multimodal AI assistant that excels at deeply understanding and richly describing images, charts, diagrams, text in images, scenes, and any visual content, "
+"while also answering every question accurately, clearly, and step-by-step when appropriate — always responding in the same language as the user's question, remaining polite, professional, and maximally helpful."
     )
 
     CHAT_FORMAT = (
+        "{{ bos_token if bos_token is defined else '' }}"
         "{% for message in messages %}"
             "{% if message.role == 'system' %}"
                 "{{ message.content }}"
-            "{% endif %}"
-
-            "{% if message.role == 'user' %}"
+            "{% elif message.role == 'user' %}"
+                "USER: "
                 "{% if message.content is string %}"
-                    "\nUSER: {{ message.content }}"
+                    "{{ message.content }}"
                 "{% elif message.content is iterable %}"
-                    "\nUSER: "
                     "{% for content in message.content %}"
                         "{% if content.type == 'image_url' %}"
                             "{{ content.image_url if content.image_url is string else content.image_url.url }}"
@@ -2837,20 +3064,26 @@ while also answering every question accurately, clearly, and step-by-step when a
                             "{% else %}"
                                 "data:audio/{{ content.input_audio.format }};base64,{{ content.input_audio.data }}"
                             "{% endif %}"
+                        "{% elif content.type == 'video_url' %}"
+                            "{{ content.video_url if content.video_url is string else content.video_url.url }}"
                         "{% elif content.type == 'text' %}"
                             "{{ content.text }}"
                         "{% endif %}"
                     "{% endfor %}"
                 "{% endif %}"
-            "{% endif %}"
 
-            "{% if message.role == 'assistant' and message.content is not none %}"
-                "\nASSISTANT: {{ message.content }}"
+            "{% elif message.role == 'assistant' and message.content is not none %}"
+                "ASSISTANT: {{ message.content }}"
             "{% endif %}"
+            "{{ \"\n\" }}"
         "{% endfor %}"
 
+        "{% if eos_token is defined %}"
+            "{{ eos_token }}"
+        "{% endif %}"
+
         "{% if add_generation_prompt %}"
-            "\nASSISTANT: "
+            "ASSISTANT: "
         "{% endif %}"
     )
 
@@ -2883,6 +3116,10 @@ while also answering every question accurately, clearly, and step-by-step when a
         self.mtmd_ctx: Optional[mtmd_cpp.mtmd_context_p] = None
         self.extra_template_arguments: dict[str, Any] = {}
 
+        self.is_support_vision = False
+        self.is_support_audio = False
+        self.is_support_video = False
+
         if not os.path.exists(clip_model_path):
             raise ValueError(f"{self.log_prefix}(__init__): Clip model path does not exist: {clip_model_path}")
 
@@ -2906,7 +3143,7 @@ while also answering every question accurately, clearly, and step-by-step when a
         self.mctx_params.use_gpu = self.use_gpu
         self.mctx_params.print_timings = self.verbose
         self.mctx_params.n_threads = llama_model.n_threads
-        self.mctx_params.flash_attn_type  = self._mtmd_cpp.clip_flash_attn_type.CLIP_FLASH_ATTN_TYPE_AUTO
+        self.mctx_params.flash_attn_type = self._mtmd_cpp.clip_flash_attn_type.CLIP_FLASH_ATTN_TYPE_AUTO
         self.mctx_params.warmup = True
         if self.image_min_tokens > 0:
             self.mctx_params.image_min_tokens = self.image_min_tokens
@@ -2950,6 +3187,15 @@ while also answering every question accurately, clearly, and step-by-step when a
         else:
             if self.verbose:
                 print(f"{self.log_prefix}(_init_mtmd_context): Audio is NOT supported by this mmproj model backend.", file=sys.stderr)
+
+        # Check if video is supported
+        self.is_support_video = self._mtmd_cpp.mtmd_helper_support_video(self.mtmd_ctx)
+        if self.is_support_video:
+            if self.verbose:
+                print(f"{self.log_prefix}(_init_mtmd_context): Video support detected.", file=sys.stderr)
+        else:
+            if self.verbose:
+                print(f"{self.log_prefix}(_init_mtmd_context): Video support is NOT available in this build.", file=sys.stderr)
 
     def close(self) -> None:
         """Explicitly free the mtmd context and vision model resources."""
@@ -2997,11 +3243,12 @@ while also answering every question accurately, clearly, and step-by-step when a
                             raise ValueError(f"{self.log_prefix}: This mmproj model instance does not support audio inputs.")
 
                         # Case A: Handle custom/forward-compatible audio_url format
-                        if content == "audio_url":
-                            url = content["audio_url"] if isinstance(content["audio_url"], str) else content["audio_url"]["url"]
+                        if content_type == "audio_url":
+                            audio_url = content["audio_url"]
+                            url = audio_url if isinstance(audio_url, str) else audio_url["url"]
                             media_items.append({"url": url, "type": "audio"})
                         # Case B: Handle OpenAI standard input_audio format
-                        else:
+                        elif content_type == "input_audio":
                             input_audio = content.get("input_audio", {})
                             if isinstance(input_audio, dict) and "data" in input_audio:
                                 # It might just be raw base64 data, we can format it as a data URI to reuse load_audio logic
@@ -3027,7 +3274,16 @@ while also answering every question accurately, clearly, and step-by-step when a
                                 if url:
                                     media_items.append({"url": url, "type": "audio"})
 
-                    # 3. Text & Unknown Types
+                    # 3. Video Processing
+                    elif content_type == "video_url":
+                        if not self.is_support_video:
+                            raise ValueError(f"{self.log_prefix}: This libmtmd build does not support video inputs.")
+
+                        video_url = content["video_url"]
+                        url = video_url if isinstance(video_url, str) else video_url["url"]
+                        media_items.append({"url": url, "type": "video"})
+
+                    # 4. Text & Unknown Types
                     elif content_type == "text":
                         continue
                     else:
@@ -3042,6 +3298,7 @@ while also answering every question accurately, clearly, and step-by-step when a
         Supported formats:
           - Images (via stb_image): jpg, png, bmp, etc.
           - Audio (via miniaudio): wav, mp3, flac.
+          - Video: depends on whether MTMD_VIDEO was enabled at build time.
 
         Note:
           - Media types (Image vs. Audio) are auto-detected by the C++ backend using magic bytes.
@@ -3051,24 +3308,35 @@ while also answering every question accurately, clearly, and step-by-step when a
             media_bytes (bytes): The raw byte content of the media file.
 
         Returns:
-            mtmd_bitmap: A pointer to the allocated bitmap structure containing decoded media features.
+            bitmap: mtmd_bitmap *
+            video_ctx: mtmd_helper_video * or NULL
         """
         if self.mtmd_ctx is None:
             raise ValueError(f"{self.log_prefix}(_create_bitmap_from_bytes): mtmd context not initialized.")
 
-        # Create bitmap from buffer using helper function
-        bitmap = self._mtmd_cpp.mtmd_helper_bitmap_init_from_buf(
+        if not media_bytes:
+            raise ValueError(f"{self.log_prefix}(_create_bitmap_from_bytes): empty media bytes.")
+
+        buf = (ctypes.c_uint8 * len(media_bytes)).from_buffer_copy(media_bytes)
+
+        wrapper = self._mtmd_cpp.mtmd_helper_bitmap_init_from_buf(
             self.mtmd_ctx,
-            (ctypes.c_uint8 * len(media_bytes)).from_buffer(bytearray(media_bytes)),
-            len(media_bytes)
+            buf,
+            len(media_bytes),
+            False,
         )
 
-        if bitmap is None:
-            raise ValueError(f"{self.log_prefix}(_create_bitmap_from_bytes): "
-                                "Failed to load image or audio file from media bytes "
-                                "(unsupported media format or corrupted data).")
+        if not wrapper.bitmap:
+            if wrapper.video_ctx:
+                self._mtmd_cpp.mtmd_helper_video_free(wrapper.video_ctx)
 
-        return bitmap
+            raise ValueError(
+                f"{self.log_prefix}(_create_bitmap_from_bytes): "
+                "Failed to load media from bytes "
+                "(unsupported media format, corrupted data, or missing helper support)."
+            )
+
+        return wrapper.bitmap, wrapper.video_ctx
 
 
     def _process_mtmd_prompt(
@@ -3079,6 +3347,7 @@ while also answering every question accurately, clearly, and step-by-step when a
         function_call: Optional[llama_types.ChatCompletionRequestFunctionCall] = None,
         tools: Optional[List[llama_types.ChatCompletionTool]] = None,
         tool_choice: Optional[llama_types.ChatCompletionToolChoiceOption] = None,
+        add_generation_prompt: bool = True,
     ) -> Tuple[List[int], List[tuple], Any, List[Any]]:
         """
         Core multimodal preprocessing pipeline.
@@ -3106,7 +3375,7 @@ while also answering every question accurately, clearly, and step-by-step when a
         # 2. Render the chat template and replace actual URLs with C++ media markers
         text = self.chat_template.render(
             messages=messages,
-            add_generation_prompt=True,
+            add_generation_prompt=add_generation_prompt,
             eos_token=self.mtmd_eos_token,
             bos_token=self.mtmd_bos_token,
             functions=functions,
@@ -3126,16 +3395,17 @@ while also answering every question accurately, clearly, and step-by-step when a
         # 3. Pre-allocate bitmap array to guarantee chronological order during concurrent decoding
         bitmaps = [None] * len(media_items)
         bitmap_cleanup = []
+        video_cleanup = []
         chunks = None
 
         try:
             # Concurrent Media Decoding
             import concurrent.futures
             if media_items:
-                def _create_bitmap_func(idx: int, item: str):
+                def _create_bitmap_func(idx: int, item: dict):
                     media_bytes = self.load_media(item["url"], item["type"])
-                    bitmap = self._create_bitmap_from_bytes(media_bytes)
-                    return idx, bitmap
+                    bitmap, video_ctx = self._create_bitmap_from_bytes(media_bytes)
+                    return idx, bitmap, video_ctx
                 # This method uses multi-threaded parallel processing to convert images or audio to bitmaps,
                 # which can be used in the future to process large numbers of video frames.
                 max_workers = min(llama.n_threads, len(media_items))
@@ -3143,9 +3413,13 @@ while also answering every question accurately, clearly, and step-by-step when a
                     futures = [executor.submit(_create_bitmap_func, i, item) for i, item in enumerate(media_items)]
 
                     for future in concurrent.futures.as_completed(futures):
-                        idx, bitmap = future.result()
+                        idx, bitmap, video_ctx = future.result()
+
                         bitmaps[idx] = bitmap
                         bitmap_cleanup.append(bitmap)
+
+                        if video_ctx:
+                            video_cleanup.append(video_ctx)
 
                 # Strict validation: Abort if any thread failed to decode its assigned media
                 if any(b is None for b in bitmaps):
@@ -3181,6 +3455,12 @@ while also answering every question accurately, clearly, and step-by-step when a
             if result != 0:
                 raise ValueError(f"{self.log_prefix}(mtmd_tokenize): Unable to tokenize prompt, res = {result}.")
 
+            # Video helper contexts only need to stay alive until mtmd_tokenize() completes.
+            if video_cleanup:
+                for video_ctx in video_cleanup:
+                    self._mtmd_cpp.mtmd_helper_video_free(video_ctx)
+                video_cleanup.clear()
+
             # 6. Virtual Token Ledger Construction
             full_prompt_ids = []
             chunk_token_spans = []
@@ -3190,6 +3470,7 @@ while also answering every question accurately, clearly, and step-by-step when a
             # Cursor to track the actual media contents (URLs or base64 data) provided by the user
             media_items_count = len(media_items)
             media_items_cur = 0
+            last_media_id = None
 
             for i in range(n_chunks):
                 chunk = self._mtmd_cpp.mtmd_input_chunks_get(chunks, i)
@@ -3210,7 +3491,7 @@ while also answering every question accurately, clearly, and step-by-step when a
                         self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_AUDIO
                     ]:
                     # Extract media properties
-                    #
+                    # Note(JamePeng):
                     # The M-RoPE model is based on `n_pos` instead of `n_tokens` (of course, there's no difference in non-M-RoPE models).
                     # However, I still keep `n_tokens` because if `n_pos` is used, the underlying system will assume it is a full-match and will skip eval and sample.
                     # chunk_n_pos = self._mtmd_cpp.mtmd_input_chunk_get_n_pos(chunk) # equals to max(t,h,w) for M-RoPE; equals to `n_tokens` otherwise
@@ -3229,7 +3510,11 @@ while also answering every question accurately, clearly, and step-by-step when a
                         # while instantly breaking the match if the image content changes.
                         # media_id = - (zlib.crc32(real_media_url.encode('utf-8')) % (2**24)) - 100
                         media_id = - (zlib.crc32(real_media_url.encode('utf-8')) & 0xFFFFFF) - 100
+                        last_media_id = media_id
                         media_items_cur += 1
+                    elif last_media_id is not None:
+                        # video may expand into multiple image chunks from one media marker
+                        media_id = last_media_id
                     else:
                         # Magic Negative Number as fallback :)
                         media_id = -314159
@@ -3258,6 +3543,12 @@ while also answering every question accurately, clearly, and step-by-step when a
                 for bitmap in bitmap_cleanup:
                     self._mtmd_cpp.mtmd_bitmap_free(bitmap)
                 bitmap_cleanup = None
+            # Free videos
+            if len(video_cleanup) > 0:
+                for video_ctx in video_cleanup:
+                    self._mtmd_cpp.mtmd_helper_video_free(video_ctx)
+                video_cleanup = None
+
             bitmaps = None
 
             raise e
@@ -3306,6 +3597,13 @@ while also answering every question accurately, clearly, and step-by-step when a
         logit_bias: Optional[Dict[str, float]] = None,
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
+        add_generation_prompt: bool = True,
+        reasoning_budget: int = -1,
+        reasoning_start: str = "<think>",
+        reasoning_end: str = "</think>",
+        reasoning_budget_message: Optional[str] = None,
+        reasoning_start_in_prompt: bool = False,
+        reasoning_start_max_tokens: Optional[int] = 32,
         **kwargs,  # type: ignore
     ) -> Union[
         llama_types.CreateChatCompletionResponse,
@@ -3322,7 +3620,8 @@ while also answering every question accurately, clearly, and step-by-step when a
             functions=functions,
             function_call=function_call,
             tools=tools,
-            tool_choice=tool_choice
+            tool_choice=tool_choice,
+            add_generation_prompt=add_generation_prompt,
         )
 
         if self.verbose:
@@ -3399,7 +3698,7 @@ while also answering every question accurately, clearly, and step-by-step when a
 
                     # Stage 5: Multimodal Physical OOM Defense
                     if n_past + chunk_n_tokens > llama.n_ctx():
-                        if llama._ctx.memory_can_shift():
+                        if not llama._ctx.memory_can_shift():
                             raise RuntimeError(
                                 f"{self.log_prefix}(__call__): Context Shift is explicitly disabled by the C++ backend "
                                 f"(n_pos_per_embd > 1 or incompatible M-RoPE). "
@@ -3565,6 +3864,12 @@ while also answering every question accurately, clearly, and step-by-step when a
             logits_processor=logits_processor,
             grammar=grammar,
             logit_bias=logit_bias,
+            reasoning_budget=reasoning_budget,
+            reasoning_start=reasoning_start,
+            reasoning_end=reasoning_end,
+            reasoning_budget_message=reasoning_budget_message,
+            reasoning_start_in_prompt=reasoning_start_in_prompt,
+            reasoning_start_max_tokens=reasoning_start_max_tokens,
         )
 
         if tool is not None:
@@ -3577,18 +3882,22 @@ while also answering every question accurately, clearly, and step-by-step when a
     def load_media(self, media_url: str, media_type: str) -> bytes:
         """
         Unified dispatcher for loading media payloads.
-        Routes the URL/URI to the specific image or audio processor based on the media_type.
+        Routes the URL/URI to the specific image, audio, or video processor based on the media_type.
         """
         if media_type == "image":
             return self._load_image(media_url)
+
         elif media_type == "audio":
-            audio_bytes = self._load_audio(media_url)
-            # Apply ironclad magic bytes validation before returning
+            audio_bytes = self._load_bytes(media_url, timeout=15, kind="audio")
             try:
                 self.detect_audio_format(audio_bytes)
             except ValueError as e:
                 raise ValueError(f"{self.log_prefix}(load_media): {e}")
             return audio_bytes
+
+        elif media_type == "video":
+            return self._load_bytes(media_url, timeout=30, kind="video")
+
         else:
             raise ValueError(f"{self.log_prefix}(load_media): Unknown media type '{media_type}'")
 
@@ -3628,41 +3937,51 @@ while also answering every question accurately, clearly, and step-by-step when a
                 "The underlying C++ miniaudio backend ONLY supports WAV, MP3, and FLAC."
             )
 
+    DEFAULT_HTTP_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/148.0.0.0 Safari/537.36"
+        ),
+    }
+
     @staticmethod
-    def _load_audio(audio_url: str) -> bytes:
+    def _load_bytes(media_url: str, timeout: int = 15, kind: str = "media") -> bytes:
         """
-        Load audio from either a URL, local path, or a data URI and return raw bytes.
+        Load raw bytes from a data URI, local file path, or remote HTTP/HTTPS URL.
         """
+        media_bytes = b""
 
-        audio_bytes = b""
-
-        # 1. Handle data URI (base64)
-        if audio_url.strip().startswith("data:"):
-            comma_pos = audio_url.find(",")
+        # 1. Handle data URI
+        if media_url.strip().startswith("data:"):
+            comma_pos = media_url.find(",")
             if comma_pos == -1:
                 raise ValueError("Invalid data URI: missing comma separator")
-            base64_data = audio_url[comma_pos + 1 :]
-            audio_bytes = base64.b64decode(base64_data)
+
+            base64_data = media_url[comma_pos + 1:]
+            media_bytes = base64.b64decode(base64_data)
 
         # 2. Handle local file path
-        elif os.path.exists(audio_url):
-            with open(audio_url, "rb") as f:
-                audio_bytes = f.read()
+        elif os.path.exists(media_url):
+            with open(media_url, "rb") as f:
+                media_bytes = f.read()
 
         # 3. Handle remote URL via HTTP/HTTPS
         else:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            req = urllib.request.Request(audio_url, headers=headers)
+            req = urllib.request.Request(
+                media_url,
+                headers=MTMDChatHandler.DEFAULT_HTTP_HEADERS,
+            )
             try:
-                with urllib.request.urlopen(req, timeout=15) as f:
-                    audio_bytes = f.read()
+                with urllib.request.urlopen(req, timeout=timeout) as f:
+                    media_bytes = f.read()
             except (URLError, HTTPError) as e:
-                raise ConnectionError(f"Failed to download audio from {audio_url}: {e}")
+                raise ConnectionError(f"Failed to download {kind} from {media_url}: {e}")
 
-        if not audio_bytes:
-            raise ValueError("Empty audio data received")
+        if not media_bytes:
+            raise ValueError(f"Empty {kind} data received")
 
-        return audio_bytes
+        return media_bytes
 
     @staticmethod
     def _load_image(image_url: str) -> bytes:
@@ -3678,28 +3997,14 @@ while also answering every question accurately, clearly, and step-by-step when a
         Returns:
             JPEG-encoded bytes (quality=95) in RGB mode, suitable for most vision models.
         """
-        image_bytes = b""
+        # 1. Load image bytes from image_url
+        image_bytes = MTMDChatHandler._load_bytes(
+            image_url,
+            timeout=15,
+            kind="image",
+        )
 
-        # 1. Handle data URI (base64)
-        if image_url.strip().startswith("data:"):
-            # Split only once from the right to correctly handle mime types containing commas
-            comma_pos = image_url.find(",")
-            if comma_pos == -1:
-                raise ValueError("Invalid data URI: missing comma separator")
-            base64_data = image_url[comma_pos + 1 :]
-            image_bytes = base64.b64decode(base64_data)
-
-        # 2. Handle local/remote URL
-        else:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            req = urllib.request.Request(image_url, headers=headers)
-
-            try:
-                with urllib.request.urlopen(req, timeout=15) as f:
-                    image_bytes = f.read()
-            except (URLError, HTTPError) as e:
-                raise ConnectionError(f"Failed to download image from {image_url}: {e}")
-
+        # 2. Check if image_bytes is empty.
         if not image_bytes:
             raise ValueError("Empty image data received")
 
@@ -4277,6 +4582,210 @@ class MiniCPMv45ChatHandler(MTMDChatHandler):
         return super().__call__(**kwargs)
 
 
+class MiniCPMV46ChatHandler(MTMDChatHandler):
+    """
+    Handler for MiniCPM-V-4.6 models.
+
+    Features:
+    - Aligned with official tokenizer_config.json special tokens.
+    - Custom `<|image_pad|>` and `<|video_pad|>` multimodal tokens.
+    - Integrated MTMD-style URL and Base64 injection for visual content.
+    - Specialized `<tool_call>` and `<tool_response>` block generation.
+    - Autonomously folds previous reasoning paths using `last_query_index`.
+    - Toggles `<think>` block generation via `enable_thinking` (Defaults to False).
+    """
+
+    # Core tokens
+    MINICPM_BOS_TOKEN = "<|im_start|>"
+    MINICPM_EOS_TOKEN = "<|im_end|>"
+    MINICPM_PAD_TOKEN = "<|endoftext|>"
+
+    # Vision tokens
+    MINICPM_VISION_BOS_TOKEN = "<|vision_start|>"
+    MINICPM_VISION_EOS_TOKEN = "<|vision_end|>"
+    MINICPM_IMAGE_TOKEN = "<|image_pad|>"
+    MINICPM_VIDEO_TOKEN = "<|video_pad|>"
+
+    CHAT_FORMAT = (
+        "{%- if enable_thinking is not defined -%}\n"
+        "    {%- set enable_thinking = false -%}\n"
+        "{%- endif -%}\n"
+        "{%- macro render_content(content, is_system_content=false) -%}\n"
+        "    {%- if content is string -%}\n"
+        "        {{- content -}}\n"
+        "    {%- elif content is iterable and content is not mapping -%}\n"
+        "        {%- set ns = namespace(parts=[]) -%}\n"
+        "        {%- for item in content -%}\n"
+        "            {%- if 'image' in item or 'image_url' in item or item.type == 'image' -%}\n"
+        "                {%- if is_system_content -%}\n"
+        "                    {{- raise_exception('System message cannot contain images.') -}}\n"
+        "                {%- endif -%}\n"
+        "                {%- set url_val = '' -%}\n"
+        "                {%- if item.type == 'image_url' -%}\n"
+        "                    {%- set url_val = item.image_url if item.image_url is string else item.image_url.url -%}\n"
+        "                {%- endif -%}\n"
+        "                {%- set ns.parts = ns.parts + ['<|image_pad|>' + url_val] -%}\n"
+        # "            {%- elif 'video' in item or 'video_url' in item or item.type == 'video' -%}\n"
+        # "                {%- if is_system_content -%}\n"
+        # "                    {{- raise_exception('System message cannot contain videos.') -}}\n"
+        # "                {%- endif -%}\n"
+        # "                {%- set url_val = '' -%}\n"
+        # "                {%- if item.type == 'video_url' -%}\n"
+        # "                    {%- set url_val = item.video_url if item.video_url is string else item.video_url.url -%}\n"
+        # "                {%- endif -%}\n"
+        # "                {%- set ns.parts = ns.parts + ['<|video_pad|>' + url_val] -%}\n"
+        "            {%- elif 'text' in item -%}\n"
+        "                {%- set ns.parts = ns.parts + [item.text] -%}\n"
+        "            {%- else -%}\n"
+        "                {{- raise_exception('Unexpected item type in content.') -}}\n"
+        "            {%- endif -%}\n"
+        "        {%- endfor -%}\n"
+        "        {{- ns.parts | join('\\n') -}}\n"
+        "    {%- elif content is none or content is undefined -%}\n"
+        "        {{- '' -}}\n"
+        "    {%- else -%}\n"
+        "        {{- raise_exception('Unexpected content type.') -}}\n"
+        "    {%- endif -%}\n"
+        "{%- endmacro -%}\n"
+        "{%- if not messages %}\n"
+        "    {{- raise_exception('No messages provided.') }}\n"
+        "{%- endif %}\n"
+        "{%- if tools and tools is iterable and tools is not mapping %}\n"
+        "    {{- '<|im_start|>system\\n' }}\n"
+        "    {{- '# Tools\\n\\nYou have access to the following functions:\\n\\n<tools>' }}\n"
+        "    {%- for tool in tools %}\n"
+        "        {{- '\\n' }}\n"
+        "        {{- tool | tojson }}\n"
+        "    {%- endfor %}\n"
+        "    {{- '\\n</tools>' }}\n"
+        "    {{- '\\n\\nIf you choose to call a function ONLY reply in the following format with NO suffix:\\n\\n<tool_call>\\n<function=example_function_name>\\n<parameter=example_parameter_1>\\nvalue_1\\n</parameter>\\n<parameter=example_parameter_2>\\nThis is the value for the second parameter\\nthat can span\\nmultiple lines\\n</parameter>\\n</function>\\n</tool_call>\\n\\n<IMPORTANT>\\nReminder:\\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\\n- Required parameters MUST be specified\\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\\n</IMPORTANT>' }}\n"
+        "    {%- if messages[0].role == 'system' %}\n"
+        "        {%- set content = render_content(messages[0].content, true)|trim %}\n"
+        "        {%- if content %}\n"
+        "            {{- '\\n\\n' + content }}\n"
+        "        {%- endif %}\n"
+        "    {%- endif %}\n"
+        "    {{- '<|im_end|>\\n' }}\n"
+        "{%- else %}\n"
+        "    {%- if messages[0].role == 'system' %}\n"
+        "        {%- set content = render_content(messages[0].content, true)|trim %}\n"
+        "        {{- '<|im_start|>system\\n' + content + '<|im_end|>\\n' }}\n"
+        "    {%- endif %}\n"
+        "{%- endif %}\n"
+        "{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}\n"
+        "{%- for message in messages[::-1] %}\n"
+        "    {%- set index = (messages|length - 1) - loop.index0 %}\n"
+        "    {%- if ns.multi_step_tool and message.role == 'user' %}\n"
+        "        {%- set content = render_content(message.content)|trim %}\n"
+        "        {%- if not(content.startswith('<tool_response>') and content.endswith('</tool_response>')) %}\n"
+        "            {%- set ns.multi_step_tool = false %}\n"
+        "            {%- set ns.last_query_index = index %}\n"
+        "        {%- endif %}\n"
+        "    {%- endif %}\n"
+        "{%- endfor %}\n"
+        "{%- if ns.multi_step_tool %}\n"
+        "    {{- raise_exception('No user query found in messages.') }}\n"
+        "{%- endif %}\n"
+        "{%- for message in messages %}\n"
+        "    {%- set content = render_content(message.content)|trim %}\n"
+        "    {%- if message.role == 'system' %}\n"
+        "        {%- if not loop.first %}\n"
+        "            {{- raise_exception('System message must be at the beginning.') }}\n"
+        "        {%- endif %}\n"
+        "    {%- elif message.role == 'user' %}\n"
+        "        {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}\n"
+        "    {%- elif message.role == 'assistant' %}\n"
+        "        {%- set reasoning_content = '' %}\n"
+        "        {%- if message.reasoning_content is string %}\n"
+        "            {%- set reasoning_content = message.reasoning_content %}\n"
+        "        {%- else %}\n"
+        "            {%- if '</think>' in content %}\n"
+        "                {%- set reasoning_content = content.split('</think>')[0].rstrip('\\n').split('<think>')[-1].lstrip('\\n') %}\n"
+        "                {%- set content = content.split('</think>')[-1].lstrip('\\n') %}\n"
+        "            {%- endif %}\n"
+        "        {%- endif %}\n"
+        "        {%- set reasoning_content = reasoning_content|trim %}\n"
+        "        {%- if loop.index0 > ns.last_query_index %}\n"
+        "            {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' + content }}\n"
+        "        {%- else %}\n"
+        "            {{- '<|im_start|>' + message.role + '\\n' + content }}\n"
+        "        {%- endif %}\n"
+        "        {%- if message.tool_calls and message.tool_calls is iterable and message.tool_calls is not mapping %}\n"
+        "            {%- for tool_call in message.tool_calls %}\n"
+        "                {%- if tool_call.function is defined %}\n"
+        "                    {%- set tool_call = tool_call.function %}\n"
+        "                {%- endif %}\n"
+        "                {%- if loop.first %}\n"
+        "                    {%- if content|trim %}\n"
+        "                        {{- '\\n\\n<tool_call>\\n<function=' + tool_call.name + '>\\n' }}\n"
+        "                    {%- else %}\n"
+        "                        {{- '<tool_call>\\n<function=' + tool_call.name + '>\\n' }}\n"
+        "                    {%- endif %}\n"
+        "                {%- else %}\n"
+        "                    {{- '\\n<tool_call>\\n<function=' + tool_call.name + '>\\n' }}\n"
+        "                {%- endif %}\n"
+        "                {%- if tool_call.arguments is defined %}\n"
+        "                    {%- for args_name, args_value in tool_call.arguments|items %}\n"
+        "                        {{- '<parameter=' + args_name + '>\\n' }}\n"
+        "                        {%- set args_value = args_value | tojson | safe if args_value is mapping or (args_value is sequence and args_value is not string) else args_value | string %}\n"
+        "                        {{- args_value }}\n"
+        "                        {{- '\\n</parameter>\\n' }}\n"
+        "                    {%- endfor %}\n"
+        "                {%- endif %}\n"
+        "                {{- '</function>\\n</tool_call>' }}\n"
+        "            {%- endfor %}\n"
+        "        {%- endif %}\n"
+        "        {{- '<|im_end|>\\n' }}\n"
+        "    {%- elif message.role == 'tool' %}\n"
+        "        {%- if loop.previtem and loop.previtem.role != 'tool' %}\n"
+        "            {{- '<|im_start|>user' }}\n"
+        "        {%- endif %}\n"
+        "        {{- '\\n<tool_response>\\n' }}\n"
+        "        {{- content }}\n"
+        "        {{- '\\n</tool_response>' }}\n"
+        "        {%- if not loop.last and loop.nextitem.role != 'tool' %}\n"
+        "            {{- '<|im_end|>\\n' }}\n"
+        "        {%- elif loop.last %}\n"
+        "            {{- '<|im_end|>\\n' }}\n"
+        "        {%- endif %}\n"
+        "    {%- else %}\n"
+        "        {{- raise_exception('Unexpected message role.') }}\n"
+        "    {%- endif %}\n"
+        "{%- endfor %}\n"
+        "{%- if add_generation_prompt %}\n"
+        "    {{- '<|im_start|>assistant\\n' }}\n"
+        "    {%- if enable_thinking is defined and enable_thinking is false %}\n"
+        "        {{- '<think>\\n\\n</think>\\n\\n' }}\n"
+        "    {%- else %}\n"
+        "        {{- '<think>\\n' }}\n"
+        "    {%- endif %}\n"
+        "{%- endif %}\n"
+    )
+
+    def __init__(self, enable_thinking: bool = True, **kwargs):
+        """
+        Initializes the MiniCPM-V-4.6 Handler.
+
+        Args:
+            enable_thinking (bool): Controls whether to open a `<think>` block for reasoning.
+                                    Defaults to False as per the standard template logic.
+        """
+        self.enable_thinking = enable_thinking
+        super().__init__(**kwargs)
+
+    def __call__(self, **kwargs):
+        # Inject the thinking variable into the Jinja environment
+        self.extra_template_arguments["enable_thinking"] = self.enable_thinking
+
+        # MiniCPM uses standard <|im_end|> ChatML stop formatting
+        kwargs['stop'] = [self.MINICPM_PAD_TOKEN, self.MINICPM_EOS_TOKEN]
+
+        if self.verbose:
+            print(f"{self.log_prefix}(enable_thinking={self.enable_thinking}) - Start processing")
+
+        return super().__call__(**kwargs)
+
+
 class Gemma3ChatHandler(MTMDChatHandler):
 
     GEMMA3_BOI_TOKEN  = "<start_of_image>"
@@ -4368,12 +4877,12 @@ class Gemma4ChatHandler(MTMDChatHandler):
     GEMMA4_ETR_TOKEN = "<tool_response|>"
 
     CHAT_FORMAT = (
-        "{%- macro format_parameters(properties, required) -%}\n"
+        "{%- macro format_parameters(properties, required, filter_keys=false) -%}\n"
         "    {%- set standard_keys = ['description', 'type', 'properties', 'required', 'nullable'] -%}\n"
         "    {%- set ns = namespace(found_first=false) -%}\n"
         "    {%- for key, value in properties | dictsort -%}\n"
         "        {%- set add_comma = false -%}\n"
-        "        {%- if key not in standard_keys -%}\n"
+        "        {%- if not filter_keys or key not in standard_keys -%}\n"
         "            {%- if ns.found_first %},{% endif -%}\n"
         "            {%- set ns.found_first = true -%}\n"
         "            {{ key }}:{\n"
@@ -4435,7 +4944,7 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "                {%- elif value is mapping -%}\n"
         "                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}\n"
         "                    properties:{\n"
-        "                    {{- format_parameters(value, value['required'] | default([])) -}}\n"
+        "                    {{- format_parameters(value, value['required'] | default([]), filter_keys=true) -}}\n"
         "                    }\n"
         "                {%- endif -%}\n"
         "                {%- if value['required'] -%}\n"
@@ -4458,10 +4967,10 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "    {%- set params = tool_data['function']['parameters'] -%}\n"
         "    {%- if params -%}\n"
         "        ,parameters:{\n"
-        "        {%- if params['properties'] -%}\n"
+        "        {%- if params.get('properties') -%}\n"
         "            properties:{ {{- format_parameters(params['properties'], params['required']) -}} },\n"
         "        {%- endif -%}\n"
-        "        {%- if params['required'] -%}\n"
+        "        {%- if params.get('required') -%}\n"
         "            required:[\n"
         "            {%- for item in params['required'] -%}\n"
         "                <|\"|>{{- item -}}<|\"|>\n"
@@ -4469,7 +4978,7 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "            {%- endfor -%}\n"
         "            ],\n"
         "        {%- endif -%}\n"
-        "        {%- if params['type'] -%}\n"
+        "        {%- if params.get('type') -%}\n"
         "            type:<|\"|>{{- params['type'] | upper -}}<|\"|>}\n"
         "        {%- endif -%}\n"
         "    {%- endif -%}\n"
@@ -4526,6 +5035,7 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "    {%- endfor -%}\n"
         "    {{- ns.result | trim -}}\n"
         "{%- endmacro -%}\n"
+        "\n"
         "{%- macro format_tool_response_block(tool_name, response) -%}\n"
         "    {{- '<|tool_response>' -}}\n"
         "    {%- if response is mapping -%}\n"
@@ -4540,6 +5050,7 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "    {%- endif -%}\n"
         "    {{- '<tool_response|>' -}}\n"
         "{%- endmacro -%}\n"
+        "\n"
         "{%- set ns = namespace(prev_message_type=None) -%}\n"
         "{%- set loop_messages = messages -%}\n"
         "{{- bos_token -}}\n"
@@ -4552,7 +5063,13 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "        {%- set ns.prev_message_type = 'think' -%}\n"
         "    {%- endif -%}\n"
         "    {%- if messages[0]['role'] in ['system', 'developer'] -%}\n"
-        "        {{- messages[0]['content'] | trim -}}\n"
+        "        {%- if messages[0]['content'] is string -%}\n"
+        "            {{- messages[0]['content'] | trim -}}\n"
+        "        {%- elif messages[0]['content'] is sequence -%}\n"
+        "            {%- for item in messages[0]['content'] -%}\n"
+        "                {{- item['text'] | trim + ' '-}}\n"
+        "            {%- endfor -%}\n"
+        "        {%- endif -%}\n"
         "        {%- set loop_messages = messages[1:] -%}\n"
         "    {%- endif -%}\n"
         "    {%- if tools -%}\n"
@@ -4565,6 +5082,7 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "    {%- endif -%}\n"
         "    {{- '<turn|>\\n' -}}\n"
         "{%- endif %}\n"
+        "\n"
         "{#- Pre-scan: find last user message index for reasoning guard -#}\n"
         "{%- set ns_turn = namespace(last_user_idx=-1) -%}\n"
         "{%- for i in range(loop_messages | length) -%}\n"
@@ -4572,6 +5090,7 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "        {%- set ns_turn.last_user_idx = i -%}\n"
         "    {%- endif -%}\n"
         "{%- endfor -%}\n"
+        "\n"
         "{#- Loop through messages -#}\n"
         "{%- for message in loop_messages -%}\n"
         "    {%- if message['role'] != 'tool' -%}\n"
@@ -4593,12 +5112,14 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "    {%- if not continue_same_model_turn -%}\n"
         "        {{- '<|turn>' + role + '\\n' }}\n"
         "    {%- endif -%}\n"
+        "\n"
         "    {#- Render reasoning/reasoning_content as thinking channel -#}\n"
         "    {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}\n"
         "    {%- if thinking_text and loop.index0 > ns_turn.last_user_idx and message.get('tool_calls') -%}\n"
         "        {{- '<|channel>thought\\n' + thinking_text + '\\n<channel|>' -}}\n"
         "    {%- endif -%}\n"
-        "            {%- if message['tool_calls'] -%}\n"
+        "\n"
+        "            {%- if message.get('tool_calls') -%}\n"
         "                {%- for tool_call in message['tool_calls'] -%}\n"
         "                    {%- set function = tool_call['function'] -%}\n"
         "                    {{- '<|tool_call>call:' + function['name'] + '{' -}}\n"
@@ -4616,6 +5137,7 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "                {%- endfor -%}\n"
         "                {%- set ns.prev_message_type = 'tool_call' -%}\n"
         "            {%- endif -%}\n"
+        "\n"
         "            {%- set ns_tr_out = namespace(flag=false) -%}\n"
         "            {%- if message.get('tool_responses') -%}\n"
         "                {#- Legacy: tool_responses embedded on the assistant message (Google/Gemma native) -#}\n"
@@ -4652,6 +5174,23 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "                                {%- endif -%}\n"
         "                            {%- endfor -%}\n"
         "                            {{- format_tool_response_block(ns_tname.name, ns_txt.s) -}}\n"
+        "                            {%- for part in tool_body -%}\n"
+        "                                {%- if part.get('type') == 'image_url' -%}\n"
+        "                                    {%- set url_val = part['image_url'] if part['image_url'] is string else part['image_url']['url'] -%}\n"
+        "                                    {{- '<|image|>' + url_val -}}\n"
+        "                                {%- elif part.get('type') in ['audio_url', 'input_audio'] -%}\n"
+        "                                    {%- if part.get('type') == 'audio_url' -%}\n"
+        "                                        {%- set audio_val = part['audio_url'] if part['audio_url'] is string else part['audio_url']['url'] -%}\n"
+        "                                        {{- '<|audio|>' + audio_val -}}\n"
+        "                                    {%- elif part.get('type') == 'input_audio' -%}\n"
+        "                                        {%- set audio_val = part['input_audio'] if part['input_audio'] is string else ('data:audio/' + part['input_audio']['format'] + ';base64,' + part['input_audio']['data']) -%}\n"
+        "                                        {{- '<|audio|>' + audio_val -}}\n"
+        "                                    {%- endif -%}\n"
+        # "                              {%- elif part.get('type') == 'video_url' -%}\n"
+        # "                                  {%- set video_val = part['video_url'] if part['video_url'] is string else part['video_url']['url'] -%}\n"
+        # "                                  {{- '<|video|>' + video_val -}}\n"
+        "                                {%- endif -%}\n"
+        "                            {%- endfor -%}\n"
         "                        {%- else -%}\n"
         "                            {{- format_tool_response_block(ns_tname.name, tool_body) -}}\n"
         "                        {%- endif -%}\n"
@@ -4660,6 +5199,8 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "                    {%- endif -%}\n"
         "                {%- endfor -%}\n"
         "            {%- endif -%}\n"
+        "\n"
+        "            {%- set captured_content -%}\n"
         "            {%- if message['content'] is string -%}\n"
         "                {%- if role == 'model' -%}\n"
         "                    {{- strip_thinking(message['content']) -}}\n"
@@ -4678,28 +5219,35 @@ class Gemma4ChatHandler(MTMDChatHandler):
         "                        {%- set url_val = item['image_url'] if item['image_url'] is string else item['image_url']['url'] -%}\n"
         "                        {{- '<|image|>' + url_val -}}\n"
         "                        {%- set ns.prev_message_type = 'image' -%}\n"
-        "                    {%- elif item['type'] == 'audio_url' -%}\n"
-        "                        {%- set audio_val = item['audio_url'] if item['audio_url'] is string else item['audio_url']['url'] -%}\n"
-        "                        {{- '<|audio|>' + audio_val -}}\n"
+        "                    {%- elif item['type'] in ['audio_url', 'input_audio'] -%}\n"
+        "                        {%- if item['type'] == 'audio_url' -%}\n"
+        "                            {%- set audio_val = item['audio_url'] if item['audio_url'] is string else item['audio_url']['url'] -%}\n"
+        "                            {{- '<|audio|>' + audio_val -}}\n"
+        "                        {%- elif item['type'] == 'input_audio' -%}\n"
+        "                            {%- set audio_val = item['input_audio'] if item['input_audio'] is string else ('data:audio/' + item['input_audio']['format'] + ';base64,' + item['input_audio']['data']) -%}\n"
+        "                            {{- '<|audio|>' + audio_val -}}\n"
+        "                        {%- endif -%}\n"
         "                        {%- set ns.prev_message_type = 'audio' -%}\n"
-        "                    {%- elif item['type'] == 'input_audio' -%}\n"
-        "                        {%- set audio_val = item['input_audio'] if item['input_audio'] is string else ('data:audio/' + item['input_audio']['format'] + ';base64,' + item['input_audio']['data']) -%}\n"
-        "                        {{- '<|audio|>' + audio_val -}}\n"
-        "                        {%- set ns.prev_message_type = 'audio' -%}\n"
+        "                    {%- endif -%}\n"
         # "                    {%- elif item['type'] == 'video_url' -%}\n"
         # "                        {%- set video_val = item['video_url'] if item['video_url'] is string else item['video_url']['url'] -%}\n"
         # "                        {{- '<|video|>' + video_val -}}\n"
         # "                        {%- set ns.prev_message_type = 'video' -%}\n"
-        "                    {%- endif -%}\n"
         "                {%- endfor -%}\n"
         "            {%- endif -%}\n"
+        "            {%- endset -%}\n"
+        "\n"
+        "            {{- captured_content -}}\n"
+        "            {%- set has_content = captured_content | trim | length > 0 -%}\n"
+        "\n"
         "        {%- if ns.prev_message_type == 'tool_call' and not ns_tr_out.flag -%}\n"
         "            {{- '<|tool_response>' -}}\n"
-        "        {%- elif not (ns_tr_out.flag and not message.get('content')) -%}\n"
+        "        {%- elif not (ns_tr_out.flag and not has_content) -%}\n"
         "            {{- '<turn|>\\n' -}}\n"
         "        {%- endif -%}\n"
         "    {%- endif -%}\n"
         "{%- endfor -%}\n"
+        "\n"
         "{%- if add_generation_prompt -%}\n"
         "    {%- if ns.prev_message_type != 'tool_response' and ns.prev_message_type != 'tool_call' -%}\n"
         "        {{- '<|turn>model\\n' -}}\n"
@@ -4728,7 +5276,7 @@ class Gemma4ChatHandler(MTMDChatHandler):
         self.extra_template_arguments["enable_thinking"] = self.enable_thinking
 
         # Set the stop token based on Gemma 4's format (<turn|>)
-        # generation_config.json:   "eos_token_id": [ 1, 106, 50]
+        # generation_config.json:   "eos_token_id": [1, 106, 50]
         kwargs['stop'] = [self.GEMMA4_EOS_TOKEN, self.GEMMA4_EOT_TOKEN, self.GEMMA4_STR_TOKEN]
 
         if self.verbose:
@@ -4894,7 +5442,7 @@ class GraniteDoclingChatHandler(MTMDChatHandler):
 
     Format(512x512): <loc_xmin><loc_ymin><loc_xmax><loc_ymax>Content
 
-     The GGUF files for Model and MMPROJ should be BF16 version !!!
+    Note(JamePeng): The GGUF files for Model and MMPROJ should be BF16 version !!!
                     Since the model does not have special tokens for the start and end of an image,
                     it is recommended to process only one image at a time.
                     You can iterate through the images individually for recognition.
@@ -5021,7 +5569,7 @@ class LFM25VLChatHandler(MTMDChatHandler):
     """
     Handler for LFM2.5-VL multimodal models.
 
-     The suggestion is to compress the input image to 512x512 pixels to achieve native resolution processing.
+    Note(JamePeng): The suggestion is to compress the input image to 512x512 pixels to achieve native resolution processing.
     """
     # Aligned with LFM2.5-VL tokenizer_config
     LFM25VL_BOS_TOKEN = "<|startoftext|>"
@@ -5116,7 +5664,7 @@ class LFM25VLChatHandler(MTMDChatHandler):
 
 class PaddleOCRChatHandler(MTMDChatHandler):
     """
-    Handler for PaddleOCR 1.5 multimodal models.
+    Handler for PaddleOCR 1.5/1.6 multimodal models.
     """
 
     PADDLEOCR_CLS_TOKEN = "<|begin_of_sentence|>"
@@ -5223,6 +5771,11 @@ class PaddleOCRChatHandler(MTMDChatHandler):
 
 
 class Qwen25VLChatHandler(MTMDChatHandler):
+
+    QWEN25_VL_BOS_TOKEN = "<|endoftext|>"
+    QWEN25_VL_PAD_TOKEN = "<|endoftext|>"
+    QWEN25_VL_EOS_TOKEN = "<|im_end|>"
+
     CHAT_FORMAT = (
         "{% set image_count = namespace(value=0) %}"
         "{% for message in messages %}"
@@ -5254,6 +5807,8 @@ class Qwen25VLChatHandler(MTMDChatHandler):
     )
 
     def __call__(self, **kwargs):
+        kwargs['stop'] = [self.QWEN25_VL_EOS_TOKEN, self.QWEN25_VL_PAD_TOKEN]
+
         llama = kwargs['llama']
 
         if hasattr(llama, 'input_ids'):
@@ -5265,8 +5820,96 @@ class Qwen25VLChatHandler(MTMDChatHandler):
         # Use parent implementation
         return super().__call__(**kwargs)
 
+class Qwen3ASRChatHandler(MTMDChatHandler):
+    """
+    Handler for Qwen 3 ASR (Automatic Speech Recognition) models.
+
+    Features:
+    - Highly specialized for Speech-to-Text tasks.
+    - Aggregates all system text into a single cohesive system block.
+    - Drops user text entirely, extracting ONLY audio data into a unified user turn.
+    - Wraps audio with <|audio_start|><|audio_pad|>[DATA]<|audio_end|>.
+    - Integrated MTMD-style URL and Base64 injection for input_audio and audio_url.
+    """
+
+    DEFAULT_SYSTEM_MESSAGE = """
+    You are an advanced multilingual Speech-to-Text model. Accurately transcribe the audio into text in its original spoken language.
+    You should ignore background noise, filler words, and stutters where possible, and format the final output with correct grammar and capitalization.
+    """
+
+    QWEN3_ASR_BOS_TOKEN = "<|im_start|>"
+    QWEN3_ASR_PAD_TOKEN = "<|endoftext|>"
+    QWEN3_ASR_EOS_TOKEN = "<|im_end|>"
+
+
+    QWEN3_ASR_AUDIO_BOS_TOKEN = "<|audio_start|>"
+    QWEN3_ASR_AUDIO_PAD_TOKEN = "<|audio_pad|>"
+    QWEN3_ASR_AUDIO_EOS_TOKEN = "<|audio_end|>"
+
+    CHAT_FORMAT = (
+        "{%- set ns = namespace(system_text='') -%}\n"
+        "{%- for m in messages -%}\n"
+        "    {%- if m.role == 'system' -%}\n"
+        "        {%- if m.content is string -%}\n"
+        "            {%- set ns.system_text = ns.system_text + m.content -%}\n"
+        "        {%- else -%}\n"
+        "            {%- for c in m.content -%}\n"
+        "                {%- if c.type == 'text' and (c.text is defined) -%}\n"
+        "                    {%- set ns.system_text = ns.system_text + c.text -%}\n"
+        "                {%- endif -%}\n"
+        "            {%- endfor -%}\n"
+        "        {%- endif -%}\n"
+        "    {%- endif -%}\n"
+        "{%- endfor -%}\n"
+        "\n"
+        "{%- set ns2 = namespace(audio_tokens='') -%}\n"
+        "{%- for m in messages -%}\n"
+        "    {%- if m.content is not string -%}\n"
+        "        {%- for c in m.content -%}\n"
+        "            {%- if c.type == 'audio' or ('audio' in c) or ('audio_url' in c) or c.type == 'input_audio' -%}\n"
+        "                {#- MTMD Audio Injection -#}\n"
+        "                {%- set audio_val = '' -%}\n"
+        "                {%- if c.type == 'audio_url' or 'audio_url' in c -%}\n"
+        "                    {%- set audio_val = c.audio_url if c.audio_url is string else c.audio_url.url -%}\n"
+        "                {%- elif c.type == 'input_audio' or 'input_audio' in c -%}\n"
+        "                    {%- set audio_val = c.input_audio if c.input_audio is string else ('data:audio/' + c.input_audio.format + ';base64,' + c.input_audio.data) -%}\n"
+        "                {%- endif -%}\n"
+        "                {%- set ns2.audio_tokens = ns2.audio_tokens + '<|audio_start|><|audio_pad|>' + audio_val + '<|audio_end|>' -%}\n"
+        "            {%- endif -%}\n"
+        "        {%- endfor -%}\n"
+        "    {%- endif -%}\n"
+        "{%- endfor -%}\n"
+        "\n"
+        "{{- '<|im_start|>system\\n' + (ns.system_text if ns.system_text is string else '') + '<|im_end|>\\n' -}}\n"
+        "{{- '<|im_start|>user\\n' + ns2.audio_tokens + '<|im_end|>\\n' -}}\n"
+        "{%- if add_generation_prompt -%}\n"
+        "    {{- '<|im_start|>assistant\\n' -}}\n"
+        "{%- endif -%}\n"
+    )
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def __call__(self, **kwargs):
+        # Qwen3 models universally use `<|endoftext|>` and `<|im_end|>` as the stop token
+        kwargs['stop'] = [self.QWEN3_ASR_AUDIO_PAD_TOKEN, self.QWEN3_ASR_AUDIO_EOS_TOKEN]
+
+        llama = kwargs['llama']
+
+        if hasattr(llama, 'input_ids'):
+            llama.input_ids.fill(0)
+
+        if self.verbose:
+            print(f"{self.log_prefix} - Start processing Qwen3-ASR (Audio Only)")
+
+        return super().__call__(**kwargs)
 
 class Qwen3VLChatHandler(MTMDChatHandler):
+
+    QWEN3_VL_BOS_TOKEN = "<|endoftext|>"
+    QWEN3_VL_PAD_TOKEN = "<|endoftext|>"
+    QWEN3_VL_EOS_TOKEN = "<|im_end|>"
+
     CHAT_FORMAT = (
         "{{- '<|im_start|>system\n' -}}"
         "{%- if messages[0].content is string and messages[0].role == 'system' -%}"
@@ -5375,6 +6018,8 @@ class Qwen3VLChatHandler(MTMDChatHandler):
         self.extra_template_arguments["add_vision_id"] = add_vision_id
 
     def __call__(self, **kwargs):
+        kwargs['stop'] = [self.QWEN3_VL_EOS_TOKEN, self.QWEN3_VL_PAD_TOKEN]
+
         llama = kwargs['llama']
 
         if hasattr(llama, 'input_ids'):

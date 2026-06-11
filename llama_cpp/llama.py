@@ -43,7 +43,7 @@ from .llama_cache import (
     HybridCheckpointCache, # type: ignore
 )
 from .llama_tokenizer import BaseLlamaTokenizer, LlamaTokenizer
-import llama_cpp.llama_cpp as llama_cpp
+import llama_cpp.llama_cpp as llama_cpp_lib
 import llama_cpp.llama_chat_format as llama_chat_format
 
 from llama_cpp.llama_speculative import LlamaDraftModel
@@ -55,7 +55,21 @@ from ._internals import (
     CommonSamplerType,
     CustomSampler,
 )
-from ._logger import set_verbose
+from ._ggml import (
+    ggml_backend_cpu_buffer_type,
+    ggml_backend_load_all_from_path,
+    ggml_backend_reg_count
+)
+from ._logger import (
+    configure_logging,
+    get_verbosity,
+    set_verbosity,
+    get_log_filters,
+    set_log_filters,
+    add_log_filters,
+    clear_log_filters,
+    reset_log_filters,
+)
 from ._utils import suppress_stdout_stderr
 
 
@@ -77,13 +91,17 @@ class Llama:
 
     __backend_initialized = False
 
+    LLM_FFN_EXPS_REGEX = rb"\.ffn_(up|down|gate|gate_up)_(ch|)exps"
+
     def __init__(
         self,
         model_path: str,
         *,
         # Model Params
-        n_gpu_layers: int = 0,
-        split_mode: int = llama_cpp.llama_split_mode.LLAMA_SPLIT_MODE_LAYER,
+        n_gpu_layers: Union[int, Literal["auto", "all"]] = "auto",
+        cpu_moe: bool = False,
+        n_cpu_moe: int = 0,
+        split_mode: int = llama_cpp_lib.llama_split_mode.LLAMA_SPLIT_MODE_LAYER,
         main_gpu: int = 0,
         tensor_split: Optional[List[float]] = None,
         vocab_only: bool = False,
@@ -95,20 +113,25 @@ class Llama:
         no_host: bool = False,
         kv_overrides: Optional[Dict[str, Union[bool, int, float, str]]] = None,
         # Context Params
-        seed: int = llama_cpp.LLAMA_DEFAULT_SEED,
+        seed: int = llama_cpp_lib.LLAMA_DEFAULT_SEED,
         n_ctx: int = 512,
         n_keep: int = 256,
         n_batch: int = 2048,
         n_ubatch: int = 512,
         n_seq_max: int = 1,
+        n_rs_seq: int = 0,
+        n_outputs_max: int = 0,
         n_threads: Optional[int] = None,
         n_threads_batch: Optional[int] = None,
+        ctx_type: Optional[
+            int
+        ] = llama_cpp_lib.llama_context_type.LLAMA_CONTEXT_TYPE_DEFAULT,
         rope_scaling_type: Optional[
             int
-        ] = llama_cpp.llama_rope_scaling_type.LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED,
-        pooling_type: int = llama_cpp.LLAMA_POOLING_TYPE_UNSPECIFIED,
-        attention_type: Optional[int] = llama_cpp.llama_attention_type.LLAMA_ATTENTION_TYPE_UNSPECIFIED,
-        flash_attn_type: Optional[int] = llama_cpp.llama_flash_attn_type.LLAMA_FLASH_ATTN_TYPE_AUTO,
+        ] = llama_cpp_lib.llama_rope_scaling_type.LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED,
+        pooling_type: int = llama_cpp_lib.LLAMA_POOLING_TYPE_UNSPECIFIED,
+        attention_type: Optional[int] = llama_cpp_lib.llama_attention_type.LLAMA_ATTENTION_TYPE_UNSPECIFIED,
+        flash_attn_type: Optional[int] = llama_cpp_lib.llama_flash_attn_type.LLAMA_FLASH_ATTN_TYPE_AUTO,
         rope_freq_base: float = 0.0,
         rope_freq_scale: float = 0.0,
         yarn_ext_factor: float = -1.0,
@@ -124,8 +147,9 @@ class Llama:
         swa_full: Optional[bool] = None,
         kv_unified: Optional[bool] = None,
         # HybridCheckpointCache Params
-        ctx_checkpoints: int = 32,
+        ctx_checkpoints: int = 16,
         checkpoint_interval: int = 4096,
+        checkpoint_on_device: bool = False,
         # Sampling Params
         last_n_tokens_size: int = 64,
         # Backend Params
@@ -142,7 +166,11 @@ class Llama:
         type_v: Optional[int] = None,
         # Misc
         spm_infill: bool = False,
+        # Log
         verbose: bool = True,
+        verbosity: Optional[Union[int, str, bool]] = None,
+        log_filters: Optional[Sequence[str]] = None,
+        log_filters_case_sensitive: bool = True,
         # Extra Params
         **kwargs,  # type: ignore
     ):
@@ -174,7 +202,14 @@ class Llama:
 
         Args:
             model_path: Path to the model.
-            n_gpu_layers: Number of layers to offload to GPU (-ngl). If -1, all layers are offloaded.
+            n_gpu_layers: Max number of model layers to store in VRAM (-ngl).
+                Accepts an exact integer, "auto", or "all".
+                "auto" / -1 lets llama.cpp choose automatically.
+                "all" / -2 stores all possible layers in VRAM.
+                0 disables model layer offload.
+            cpu_moe: Keep all Mixture of Experts (MoE) weights in the CPU
+            n_cpu_moe: Keep the MoE expert weights of the first N layers on CPU.
+                Useful when VRAM is insufficient for MoE models.
             split_mode: How to split the model across GPUs. See llama_cpp.LLAMA_SPLIT_* for options.
             main_gpu: main_gpu interpretation depends on split_mode: LLAMA_SPLIT_MODE_NONE: the GPU that is used for the entire model. LLAMA_SPLIT_MODE_ROW: the GPU that is used for small tensors and intermediate results. LLAMA_SPLIT_MODE_LAYER: ignored
             tensor_split: How split tensors should be distributed across GPUs. If None, the model is not split.
@@ -213,17 +248,38 @@ class Llama:
             kv_unified: use single unified KV buffer for the KV cache of all sequences
             ctx_checkpoints: max number of context checkpoints to create per slot (default: 16)[(more info)](https://github.com/ggml-org/llama.cpp/pull/15293)
             checkpoint_interval: Hybrid model checkpoint token intervals, and archiving of text with interval sizes along the way.
+            checkpoint_on_device: Store hybrid/recurrent checkpoint tensor payloads in llama_context-owned device buffers via LLAMA_STATE_SEQ_FLAGS_ON_DEVICE.
             last_n_tokens_size: Maximum number of tokens to keep in the last_n_tokens deque.
             numa: numa policy
             chat_format: String specifying the chat format to use when calling create_chat_completion.
             chat_handler: Optional chat handler to use when calling create_chat_completion.
             draft_model: Optional draft model to use for speculative decoding.
             tokenizer: Optional tokenizer to override the default tokenizer from llama.cpp.
-            verbose: Print verbose output to stderr.
             type_k: KV cache data type for K (default: f16)
             type_v: KV cache data type for V (default: f16)
             spm_infill: Use Suffix/Prefix/Middle pattern for infill (instead of Prefix/Suffix/Middle) as some models prefer this.
-
+            verbose: Backward-compatible boolean switch for native llama.cpp / ggml runtime logs.
+                False keeps only error-level native logs; True enables debug-level native logs.
+                If `verbosity` is provided, `verbosity` takes precedence over `verbose`.
+            verbosity: Fine-grained llama.cpp-style native runtime log verbosity.
+                Accepts 0-5, bool, or string aliases.
+                Numeric levels:
+                    0 = output only
+                    1 = error
+                    2 = warning
+                    3 = info
+                    4 = trace
+                    5 = debug
+                Use `verbosity=3` for llama.cpp-style default info logs.
+                `verbose=False` remains equivalent to error-only logging, while
+                `verbose=True` remains equivalent to debug logging.
+            log_filters: Optional substring filters for native runtime logs.
+                If any provided substring appears in a decoded backend log message,
+                that message is suppressed. By default, the logger may include built-in
+                filters for noisy low-level logs such as CUDA Graph reuse spam messages.
+                Pass an empty list to disable all substring filtering for this instance.
+            log_filters_case_sensitive: Whether `log_filters` should match case-sensitively.
+                Defaults to True for predictable low-level backend log filtering.
         Raises:
             ValueError: If the model path does not exist.
 
@@ -231,46 +287,81 @@ class Llama:
             A Llama instance.
         """
         self.verbose = verbose
+        self.verbosity = verbosity
         self._stack = contextlib.ExitStack()
 
-        set_verbose(verbose)
+        configure_logging(
+            verbose=verbose,
+            verbosity=verbosity,
+            log_filters=log_filters,
+            log_filters_case_sensitive=log_filters_case_sensitive,
+        )
 
+        # llama.cpp / ggml backend initialization is process-global.
+        # Run it once before loading any model.
         if not Llama.__backend_initialized:
             with suppress_stdout_stderr(disable=verbose):
-                llama_cpp.llama_backend_init()
+                llama_cpp_lib.llama_backend_init()
+
+                # Wheels built with `GGML_BACKEND_DL` ship ggml backends as separate
+                # dynamic libraries under llama_cpp/lib, for example:
+                #
+                #   ggml-cpu-x64.dll
+                #   ggml-cpu-haswell.dll
+                #   ggml-cpu-alderlake.dll
+                #   ggml-cuda.dll
+                #
+                # With the dynamic backend layout, llama_backend_init() initializes
+                # the global backend system but does not necessarily register every
+                # packaged backend. Loading the package lib directory ensures ggml can
+                # discover CPU variants and optional accelerator backends before model
+                # loading.
+                lib_dir = Path(llama_cpp_lib.__file__).resolve().parent / "lib"
+
+                if not lib_dir.exists():
+                    raise FileNotFoundError(f"Llama.__init__: llama_cpp lib directory not found: {lib_dir}")
+
+                # Load all dynamic ggml backend plugins from the packaged lib directory.
+                ggml_backend_load_all_from_path(
+                    ctypes.c_char_p(str(lib_dir).encode("utf-8"))
+                )
+
+                # Print the number of backend registrations to confirm whether the DLL is loaded.
+                if self.verbose:
+                    count = ggml_backend_reg_count()
+                    print(f"Llama.__init__: Loaded ggml backend registry count: {count}", file=sys.stderr)
+
             Llama.__backend_initialized = True
 
         if isinstance(numa, bool):
             self.numa = (
-                llama_cpp.GGML_NUMA_STRATEGY_DISTRIBUTE
+                llama_cpp_lib.GGML_NUMA_STRATEGY_DISTRIBUTE
                 if numa
-                else llama_cpp.GGML_NUMA_STRATEGY_DISABLED
+                else llama_cpp_lib.GGML_NUMA_STRATEGY_DISABLED
             )
         else:
             self.numa = numa
 
-        if self.numa != llama_cpp.GGML_NUMA_STRATEGY_DISABLED:
+        if self.numa != llama_cpp_lib.GGML_NUMA_STRATEGY_DISABLED:
             with suppress_stdout_stderr(disable=verbose):
-                llama_cpp.llama_numa_init(self.numa)
+                llama_cpp_lib.llama_numa_init(self.numa)
 
         self.model_path = model_path
 
         # Model Params
-        self.model_params = llama_cpp.llama_model_default_params()
-        self.model_params.n_gpu_layers = (
-            0x7FFFFFFF if n_gpu_layers == -1 else n_gpu_layers
-        )  # 0x7FFFFFFF is INT32 max, will be auto set to all layers
+        self.model_params = llama_cpp_lib.llama_model_default_params()
+        self.model_params.n_gpu_layers = self._parse_n_gpu_layers(n_gpu_layers)
         self.model_params.split_mode = split_mode
         self.model_params.main_gpu = main_gpu
         self.tensor_split = tensor_split
         self._c_tensor_split = None
         if self.tensor_split is not None:
-            if len(self.tensor_split) > llama_cpp.LLAMA_MAX_DEVICES:
+            if len(self.tensor_split) > llama_cpp_lib.LLAMA_MAX_DEVICES:
                 raise ValueError(
-                    f"Attempt to split tensors that exceed maximum supported devices. Current LLAMA_MAX_DEVICES={llama_cpp.LLAMA_MAX_DEVICES}"
+                    f"Attempt to split tensors that exceed maximum supported devices. Current LLAMA_MAX_DEVICES={llama_cpp_lib.LLAMA_MAX_DEVICES}"
                 )
             # Type conversion and expand the list to the length of LLAMA_MAX_DEVICES
-            FloatArray = ctypes.c_float * llama_cpp.LLAMA_MAX_DEVICES
+            FloatArray = ctypes.c_float * llama_cpp_lib.LLAMA_MAX_DEVICES
             self._c_tensor_split = FloatArray(
                 *tensor_split  # type: ignore
             )  # keep a reference to the array so it is not gc'd
@@ -283,13 +374,61 @@ class Llama:
         self.model_params.use_extra_bufts = use_extra_bufts
         self.model_params.no_host = no_host
 
+        # Logic of cpu_moe, n_cpu_moe
+        # Reference from llama.cpp/tools/llama-bench/llama-bench.cpp
+        self.cpu_moe = cpu_moe
+        self.n_cpu_moe = n_cpu_moe
+        self._cpu_moe_patterns = None
+        self._cpu_moe_tensor_buft_overrides = None
+
+        if self.n_cpu_moe < 0:
+            raise ValueError("n_cpu_moe must be >= 0")
+
+        if self.cpu_moe and self.n_cpu_moe != 0 and self.verbose:
+            print(
+                "Llama.__init__: cpu_moe=True already keeps all MoE expert weights on CPU; "
+                "n_cpu_moe is redundant.",
+                file=sys.stderr,
+            )
+
+        if self.cpu_moe or self.n_cpu_moe > 0:
+            cpu_buft = ggml_backend_cpu_buffer_type()
+
+            if self.cpu_moe:
+                patterns = [self.LLM_FFN_EXPS_REGEX]
+            else:
+                patterns = [
+                    self._make_cpu_moe_pattern(i)
+                    for i in range(self.n_cpu_moe)
+                ]
+
+            # keep pattern bytes alive
+            self._cpu_moe_patterns = patterns
+
+            TensorBuftOverrideArray = (
+                llama_cpp_lib.llama_model_tensor_buft_override
+                * (len(patterns) + 1)
+            )
+            self._cpu_moe_tensor_buft_overrides = TensorBuftOverrideArray()
+
+            for i, pattern in enumerate(self._cpu_moe_patterns):
+                self._cpu_moe_tensor_buft_overrides[i].pattern = pattern
+                self._cpu_moe_tensor_buft_overrides[i].buft = cpu_buft
+
+            self._cpu_moe_tensor_buft_overrides[len(patterns)].pattern = None
+            self._cpu_moe_tensor_buft_overrides[len(patterns)].buft = None
+
+            self.model_params.tensor_buft_overrides = (
+                self._cpu_moe_tensor_buft_overrides
+            )
+
         # kv_overrides is the original python dict
         self.kv_overrides = kv_overrides
         if kv_overrides is not None:
             # _kv_overrides_array is a ctypes.Array of llama_model_kv_override Structs
             kvo_array_len = len(kv_overrides) + 1  # for sentinel element
             self._kv_overrides_array = (
-                llama_cpp.llama_model_kv_override * kvo_array_len
+                llama_cpp_lib.llama_model_kv_override * kvo_array_len
             )()
 
             for i, (k, v) in enumerate(kv_overrides.items()):
@@ -297,17 +436,17 @@ class Llama:
                 if isinstance(v, bool):
                     self._kv_overrides_array[
                         i
-                    ].tag = llama_cpp.LlamaModelKVOverrideType.LLAMA_KV_OVERRIDE_TYPE_BOOL.value
+                    ].tag = llama_cpp_lib.LlamaModelKVOverrideType.LLAMA_KV_OVERRIDE_TYPE_BOOL.value
                     self._kv_overrides_array[i].value.val_bool = v
                 elif isinstance(v, int):
                     self._kv_overrides_array[
                         i
-                    ].tag = llama_cpp.LlamaModelKVOverrideType.LLAMA_KV_OVERRIDE_TYPE_INT.value
+                    ].tag = llama_cpp_lib.LlamaModelKVOverrideType.LLAMA_KV_OVERRIDE_TYPE_INT.value
                     self._kv_overrides_array[i].value.val_i64 = v
                 elif isinstance(v, float):
                     self._kv_overrides_array[
                         i
-                    ].tag = llama_cpp.LlamaModelKVOverrideType.LLAMA_KV_OVERRIDE_TYPE_FLOAT.value
+                    ].tag = llama_cpp_lib.LlamaModelKVOverrideType.LLAMA_KV_OVERRIDE_TYPE_FLOAT.value
                     self._kv_overrides_array[i].value.val_f64 = v
                 elif isinstance(v, str):  # type: ignore
                     v_bytes = v.encode("utf-8")
@@ -316,12 +455,12 @@ class Llama:
                     v_bytes = v_bytes.ljust(128, b"\0")
                     self._kv_overrides_array[
                         i
-                    ].tag = llama_cpp.LlamaModelKVOverrideType.LLAMA_KV_OVERRIDE_TYPE_STR.value
+                    ].tag = llama_cpp_lib.LlamaModelKVOverrideType.LLAMA_KV_OVERRIDE_TYPE_STR.value
                     # copy min(v_bytes, 128) to str_value
                     address = typing.cast(
                         int,
                         ctypes.addressof(self._kv_overrides_array[i].value)
-                        + llama_cpp.llama_model_kv_override_value.val_str.offset,
+                        + llama_cpp_lib.llama_model_kv_override_value.val_str.offset,
                     )
                     buffer_start = ctypes.cast(address, ctypes.POINTER(ctypes.c_char))
                     ctypes.memmove(
@@ -340,39 +479,50 @@ class Llama:
         self.n_batch = min(n_ctx, n_batch)  # ???
         self.n_keep = n_keep if n_keep > 0 else 256
         self.n_seq_max = n_seq_max
+        self.n_rs_seq = n_rs_seq
+        self.n_outputs_max = n_outputs_max
         self.n_threads = n_threads or max(multiprocessing.cpu_count() // 2, 1)
         self.n_threads_batch = n_threads_batch or multiprocessing.cpu_count()
 
         # Used by the sampler
-        self._seed = seed or llama_cpp.LLAMA_DEFAULT_SEED
+        self._seed = seed or llama_cpp_lib.LLAMA_DEFAULT_SEED
 
         # Context Params
-        self.context_params = llama_cpp.llama_context_default_params()
+        self.context_params = llama_cpp_lib.llama_context_default_params()
         self.context_params.n_ctx = n_ctx
         self.context_params.n_batch = self.n_batch
         self.context_params.n_ubatch = min(self.n_batch, n_ubatch)
-        self.context_params.n_seq_max = self.n_seq_max
+
+        self.context_params.n_seq_max = max(1, self.n_seq_max)
+        if self.context_params.n_seq_max > llama_cpp_lib.LLAMA_MAX_SEQ:
+            raise RuntimeError(f"n_seq_max must be <= {llama_cpp_lib.LLAMA_MAX_SEQ}")
+
+        self.context_params.n_rs_seq = self.n_rs_seq
+        self.context_params.n_outputs_max = self.n_batch if self.n_outputs_max == 0 else self.n_outputs_max
         self.context_params.n_threads = self.n_threads
         self.context_params.n_threads_batch = self.n_threads_batch
+
+        self.context_params.ctx_type = ctx_type
+        self.context_params.ctx_other = None
         self.context_params.rope_scaling_type = (
             rope_scaling_type
             if rope_scaling_type is not None
-            else llama_cpp.llama_rope_scaling_type.LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED
+            else llama_cpp_lib.llama_rope_scaling_type.LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED
         )
         self.context_params.pooling_type = (
             pooling_type
             if pooling_type is not None
-            else llama_cpp.LLAMA_POOLING_TYPE_UNSPECIFIED
+            else llama_cpp_lib.LLAMA_POOLING_TYPE_UNSPECIFIED
         )
         self.context_params.attention_type = (
             attention_type
             if attention_type is not None
-            else llama_cpp.llama_attention_type.LLAMA_ATTENTION_TYPE_UNSPECIFIED
+            else llama_cpp_lib.llama_attention_type.LLAMA_ATTENTION_TYPE_UNSPECIFIED
         )
         self.context_params.flash_attn_type = (
             flash_attn_type
             if flash_attn_type is not None
-            else llama_cpp.llama_flash_attn_type.LLAMA_FLASH_ATTN_TYPE_AUTO
+            else llama_cpp_lib.llama_flash_attn_type.LLAMA_FLASH_ATTN_TYPE_AUTO
         )
         self.context_params.rope_freq_base = (
             rope_freq_base if rope_freq_base != 0.0 else 0
@@ -481,6 +631,7 @@ class Llama:
         _is_recurrent = self._model.is_recurrent()
         _is_hybrid = self._model.is_hybrid()
         _n_swa = self._model.n_swa()
+
         # Sync llama.cpp upstream (#20291): warn swa-full is not supported for non-SWA models.
         if _n_swa == 0:
             if (self.context_params.swa_full):
@@ -495,13 +646,25 @@ class Llama:
 
         if self.is_hybrid:
             if self.verbose:
-                print(f"Llama.__init__: Hybrid/Recurrent model detected."
-                      f"(is_recurrent: {_is_recurrent}, is_hybrid: {_is_hybrid}, n_swa: {_n_swa}, swa_full: {self.context_params.swa_full}). "
-                      f" Enabling HybridCheckpointCache(ctx_checkpoints={ctx_checkpoints}, checkpoint_interval={checkpoint_interval}).",
-                      file=sys.stderr)
+                print(
+                    f"Llama.__init__: Hybrid/Recurrent model detected. "
+                    f"(is_recurrent: {_is_recurrent}, is_hybrid: {_is_hybrid}, "
+                    f"n_swa: {_n_swa}, swa_full: {self.context_params.swa_full}). "
+                    f"Enabling HybridCheckpointCache("
+                    f"ctx_checkpoints={ctx_checkpoints}, "
+                    f"checkpoint_interval={checkpoint_interval}, "
+                    f"on_device={checkpoint_on_device}).",
+                    file=sys.stderr,
+                )
             self.ctx_checkpoints = ctx_checkpoints
             self.checkpoint_interval = checkpoint_interval
-            self._hybrid_cache_mgr = HybridCheckpointCache(self._ctx.ctx, max_checkpoints=self.ctx_checkpoints, verbose=self.verbose)
+            self.checkpoint_on_device = checkpoint_on_device
+            self._hybrid_cache_mgr = HybridCheckpointCache(
+                self._ctx.ctx,
+                max_checkpoints=self.ctx_checkpoints,
+                on_device=self.checkpoint_on_device,
+                verbose=self.verbose,
+            )
         else:
             self._hybrid_cache_mgr = None
 
@@ -517,7 +680,7 @@ class Llama:
         )
 
         if self.verbose:
-            print(llama_cpp.llama_print_system_info().decode("utf-8"), file=sys.stderr)
+            print(llama_cpp_lib.llama_print_system_info().decode("utf-8"), file=sys.stderr)
 
         self.chat_format = chat_format
         self.chat_handler = chat_handler
@@ -530,39 +693,63 @@ class Llama:
         self._n_vocab = self.n_vocab()
         self._n_ctx = self.n_ctx()
 
-        self._token_nl = self.token_nl()
-        self._token_eos = self.token_eos()
-
         self._candidates = internals.LlamaTokenDataArray(n_vocab=self._n_vocab)
 
         self.n_tokens = 0
         self.input_ids: npt.NDArray[np.intc] = np.ndarray((n_ctx,), dtype=np.intc)
         self.scores: npt.NDArray[np.single] = np.ndarray((n_ctx if self._logits_all else 1, self._n_vocab), dtype=np.single)
 
-
-        self._mirostat_mu = ctypes.c_float(
-            2.0 * 5.0
-        )  # TODO: Move this to sampling context
-
         try:
             self.metadata = self._model.metadata()
+            self.model_desc = self._model.model_desc()
+            # The total size of all the tensors in the model in bytes
+            self.model_size = self._model.model_size()
+
         except Exception as e:
             self.metadata = {}
             if self.verbose:
                 print(f"Failed to load metadata: {e}", file=sys.stderr)
 
         if self.verbose:
-            print(f"Model metadata: {self.metadata}", file=sys.stderr)
+            print(f"Model desc: {self.model_desc}, "
+                  f"Model size: {self.model_size / (1024 * 1024):.2f} MB, "
+                  f"Model metadata: {self.metadata}",
+                  file=sys.stderr)
 
         eos_token_id = self.token_eos()
         bos_token_id = self.token_bos()
+        eot_token_id = self.token_eot()
+        sep_token_id = self.token_sep()
+        nl_token_id = self.token_nl()
+        pad_token_id = self.token_pad()
+        mask_token_id = self.token_mask()
 
-        eos_token = (
-            self._model.token_get_text(eos_token_id) if eos_token_id != -1 else ""
-        )
-        bos_token = (
-            self._model.token_get_text(bos_token_id) if bos_token_id != -1 else ""
-        )
+        def _token_text(token_id: int) -> str:
+            return self._model.token_get_text(token_id) if token_id != -1 else ""
+
+        bos_token = _token_text(bos_token_id)
+        eos_token = _token_text(eos_token_id)
+
+        special_tokens_map = {
+            name: text
+            for name, token_id in {
+                "eot_token": eot_token_id,
+                "sep_token": sep_token_id,
+                "nl_token": nl_token_id,
+                "pad_token": pad_token_id,
+                "mask_token": mask_token_id,
+            }.items()
+            if token_id != -1 and (text := _token_text(token_id))
+        }
+
+        stop_token_ids = [
+            token_id
+            for token_id in (eos_token_id, eot_token_id)
+            if token_id != -1
+        ]
+
+        if not stop_token_ids:
+            stop_token_ids = None
 
         # Unfortunately the llama.cpp API does not return metadata arrays, so we can't get template names from tokenizer.chat_templates
         template_choices = dict(
@@ -586,14 +773,14 @@ class Llama:
         for name, template in template_choices.items():
             try:
                 # Attempt to parse and register the template as a valid chat handler.
-                # We wrap this in a try-block because some models (like LLaVA) contain
-                # non-standard Jinja2 tags (e.g., {% generation %}) that cause the
-                # standard parser to crash.
+                # Keep this guarded because model metadata may contain malformed or
+                # model-specific Jinja templates that still cannot be rendered by this runtime.
                 self._chat_handlers[name] = llama_chat_format.Jinja2ChatFormatter(
                     template=template,
                     eos_token=eos_token,
                     bos_token=bos_token,
-                    stop_token_ids=[eos_token_id],
+                    stop_token_ids=stop_token_ids,
+                    special_tokens_map=special_tokens_map,
                 ).to_chat_handler()
             except Exception as e:
                 # If parsing fails (e.g., TemplateSyntaxError), log a warning but do not crash.
@@ -673,12 +860,34 @@ class Llama:
     def __del__(self) -> None:
         self.close()
 
+    @staticmethod
+    def _parse_n_gpu_layers(n_gpu_layers: Union[int, str]) -> int:
+        if isinstance(n_gpu_layers, str):
+            value = n_gpu_layers.strip().lower()
+            if value == "auto":
+                return -1
+            if value == "all":
+                return -2
+            try:
+                return int(value)
+            except ValueError as exc:
+                raise ValueError("n_gpu_layers must be an int, 'auto', or 'all'") from exc
+
+        if isinstance(n_gpu_layers, int):
+            return n_gpu_layers
+
+        raise TypeError("n_gpu_layers must be an int, 'auto', or 'all'")
+
+    @staticmethod
+    def _make_cpu_moe_pattern(i: int) -> bytes:
+        return f"blk\\.{i}".encode("utf-8") + Llama.LLM_FFN_EXPS_REGEX
+
     @property
-    def ctx(self) -> llama_cpp.llama_context_p:
+    def ctx(self) -> llama_cpp_lib.llama_context_p:
         return self._ctx.ctx
 
     @property
-    def model(self) -> llama_cpp.llama_model_p:
+    def model(self) -> llama_cpp_lib.llama_model_p:
         return self._model.model
 
     @property
@@ -702,6 +911,71 @@ class Llama:
             self.scores[: self.n_tokens, :].tolist(),
             maxlen=self._n_ctx if self._logits_all else 1,
         )
+
+    # Logger API
+
+    def set_verbosity(self, verbosity: Union[int, str, bool, None]) -> None:
+        """Set native llama.cpp / ggml runtime log verbosity for this process.
+
+        Levels:
+            0 = output only
+            1 = error
+            2 = warning
+            3 = info
+            4 = trace
+            5 = debug
+
+        Note:
+            Native backend logging is process-global because llama.cpp / ggml use
+            a global log callback. Changing this affects all Llama instances in
+            the current Python process.
+        """
+        set_verbosity(verbosity)
+        self.verbosity = get_verbosity()
+        self.verbose = self.verbosity >= 5
+
+
+    def get_verbosity(self) -> int:
+        """Return the current native runtime log verbosity."""
+        return get_verbosity()
+
+
+    def set_log_filters(
+        self,
+        filters: Sequence[str],
+        *,
+        case_sensitive: bool = True,
+    ) -> None:
+        """Replace substring filters for native runtime logs.
+
+        Any backend log message containing one of these substrings will be
+        suppressed. Pass an empty list to disable all substring filtering.
+
+        Note:
+            Native backend logging is process-global, so this affects all Llama
+            instances in the current Python process.
+        """
+        set_log_filters(filters, case_sensitive=case_sensitive)
+
+
+    def add_log_filters(self, filters: Sequence[str]) -> None:
+        """Append substring filters for native runtime logs."""
+        add_log_filters(filters)
+
+
+    def get_log_filters(self) -> List[str]:
+        """Return the current substring filters for native runtime logs."""
+        return get_log_filters()
+
+
+    def clear_log_filters(self) -> None:
+        """Clear all substring filters, including default filters."""
+        clear_log_filters()
+
+
+    def reset_log_filters(self) -> None:
+        """Restore default substring filters for native runtime logs."""
+        reset_log_filters()
 
     # LoRA / Adapter Management API
 
@@ -798,11 +1072,20 @@ class Llama:
             tokens: Sequence[int],
             active_loras: Optional[List[Dict[str, Union[str, float]]]] = None,
             control_vector: Optional[Dict[str, Any]] = None,
+            copy_logits: bool = True,
     ):
         """Evaluate a list of tokens.
 
         Args:
-            tokens: The list of tokens to evaluate.
+            tokens: The token ids to evaluate.
+            active_loras: Optional LoRA adapters to apply for this evaluation.
+                Each item should contain a ``name`` and an optional ``scale``.
+            control_vector: Optional control vector configuration to apply during
+                this evaluation.
+            copy_logits: Whether to copy the final logits into ``self.scores`` when
+                ``logits_all`` is disabled. Set to ``False`` for native sampler paths
+                that sample directly from the llama context and do not need
+                Python-side logits.
         """
         n_eval = len(tokens)
         if n_eval == 0:
@@ -1009,19 +1292,21 @@ class Llama:
                         if self.verbose:
                             print(f"Llama.eval: [Periodic Checkpoint] HybridCheckpoint save failed at pos {current_pos}, skipping update", file=sys.stderr)
 
-        # Save the final logit if not in _logits_all mode
-        if not self._logits_all:
-            logits_ptr = self._ctx.get_logits()
+        # Save the final logits only when Python-side logits are required.
+        # Native sampler can sample directly from ctx, so normal generation does not
+        # need to copy n_vocab floats into self.scores on every token.
+        if not self._logits_all and copy_logits:
+            logits_ptr = self._ctx.get_logits_ith(-1)
             logits_view = np.ctypeslib.as_array(logits_ptr, shape=(self._n_vocab,))
             self.scores[0, :] = logits_view
 
     # Helper method: Convert dict logit_bias to List[llama_logit_bias]
-    def _convert_logit_bias(self, logit_bias: Optional[Dict[int, float]]) -> List[llama_cpp.llama_logit_bias]:
+    def _convert_logit_bias(self, logit_bias: Optional[Dict[int, float]]) -> List[llama_cpp_lib.llama_logit_bias]:
         if not logit_bias:
             return []
         bias_list = []
         for token, bias in logit_bias.items():
-            lb = llama_cpp.llama_logit_bias()
+            lb = llama_cpp_lib.llama_logit_bias()
             lb.token = token
             lb.bias = bias
             bias_list.append(lb)
@@ -1071,6 +1356,13 @@ class Llama:
         grammar_lazy: bool = False,
         idx: Optional[int] = None,
         seed: Optional[int] = None,
+        # Reasoning Budget Params
+        reasoning_budget: int = -1,
+        reasoning_start: str = "<think>",
+        reasoning_end: str = "</think>",
+        reasoning_budget_message: Optional[str] = None,
+        reasoning_start_in_prompt: bool = False,
+        reasoning_start_max_tokens: Optional[int] = 32,
     ):
         """Sample a token from the model.
         Returns:
@@ -1129,11 +1421,21 @@ class Llama:
                 logit_bias=self._convert_logit_bias(logit_bias),
                 grammar=grammar.grammar if grammar else "",
                 grammar_lazy=grammar_lazy,
+
+                # Reasoning Budget
+                # This generic controller only counts the first visible reasoning
+                # block. Use reasoning_budget=-1 to leave it disabled.
+                reasoning_budget=reasoning_budget,
+                reasoning_start=reasoning_start,
+                reasoning_end=reasoning_end,
+                reasoning_budget_message=reasoning_budget_message,
+                reasoning_start_in_prompt=reasoning_start_in_prompt,
+                reasoning_start_max_tokens=reasoning_start_max_tokens,
             )
 
             # LogitsProcessor Adapter
             if logits_processor:
-                def adapter(token_data_array: llama_cpp.llama_token_data_array):
+                def adapter(token_data_array: llama_cpp_lib.llama_token_data_array):
                     if self._logits_all:
                         current_scores = self._scores[self.n_tokens - 1, :]
                     else:
@@ -1203,6 +1505,13 @@ class Llama:
         seed: Optional[int] = None,
         active_loras: Optional[List[Dict[str, Union[str, float]]]] = None,
         control_vector: Optional[Dict[str, Any]] = None,
+        # Reasoning Budget Params
+        reasoning_budget: int = -1,
+        reasoning_start: str = "<think>",
+        reasoning_end: str = "</think>",
+        reasoning_budget_message: Optional[str] = None,
+        reasoning_start_in_prompt: bool = False,
+        reasoning_start_max_tokens: Optional[int] = 32,
     ) -> Generator[int, Optional[Sequence[int]], None]:
         """Create a generator of tokens from a prompt.
 
@@ -1248,6 +1557,18 @@ class Llama:
             grammar: Optional BNF-like grammar (GBNF) to constrain sampling syntax.
             grammar_lazy: If True, activates grammar constraints only on specific trigger tokens.
             seed: RNG seed for sampling. Overrides the instance seed.
+            reasoning_budget: Token budget for the first visible reasoning block.
+                -1 disables the reasoning budget sampler, 0 forces the block to end
+                immediately after it starts, and N > 0 allows at most N generated tokens.
+            reasoning_start: Token/text sequence that marks the beginning of the first reasoning block.
+                Defaults to "<think>". Pass a model-specific value for non-default tags.
+            reasoning_end: Token/text sequence that marks the natural and forced end of the reasoning block.
+                Defaults to "</think>".
+            reasoning_budget_message: Optional message inserted before reasoning_end when the budget is exhausted.
+            reasoning_start_in_prompt: Set True when the prompt/template has already inserted reasoning_start,
+                so counting starts from the first generated token.
+            reasoning_start_max_tokens: Safety window for non-reasoning models. If reasoning_start is not
+                generated within this many output tokens, the sampler becomes a no-op. Set None to wait indefinitely.
             active_loras: A list of dictionaries specifying the LoRA adapters to dynamically apply during generation.
                 Each dictionary must contain a "name" key (matching a LoRA previously loaded into VRAM via `load_lora()`)
                 and an optional "scale" key (float, defaults to 1.0).
@@ -1398,11 +1719,21 @@ class Llama:
             grammar=grammar._grammar if grammar else "",
             grammar_lazy=grammar_lazy,
             seed=seed if seed is not None else self._seed,
+
+            # Reasoning Budget
+            # Keeps the core sampler model-agnostic: callers provide the visible
+            # reasoning start/end tags, and -1 keeps the controller disabled.
+            reasoning_budget=reasoning_budget,
+            reasoning_start=reasoning_start,
+            reasoning_end=reasoning_end,
+            reasoning_budget_message=reasoning_budget_message,
+            reasoning_start_in_prompt=reasoning_start_in_prompt,
+            reasoning_start_max_tokens=reasoning_start_max_tokens,
         )
 
         # Register custom python-level logits processors if provided
         if logits_processor:
-            def adapter(token_data_array: llama_cpp.llama_token_data_array):
+            def adapter(token_data_array: llama_cpp_lib.llama_token_data_array):
                 if self._logits_all:
                     current_scores = self._scores[self.n_tokens - 1, :]
                 else:
@@ -1429,6 +1760,14 @@ class Llama:
 
         self._sampling_ctx = LlamaSamplingContext(params, self._model)
 
+        # Native sampler samples directly from ctx. Python-side logits are only needed
+        # for compatibility hooks that explicitly consume self._scores.
+        copy_logits = (
+            self._logits_all
+            or logits_processor is not None
+            or stopping_criteria is not None
+        )
+
         sample_idx = self.n_tokens + len(tokens) - 1
         tokens = list(tokens)
 
@@ -1448,8 +1787,13 @@ class Llama:
                         body_tokens = tokens[:-1]
                         last_token = [tokens[-1]]
 
-                        # 1. Evaluate up to N-1
-                        self.eval(body_tokens, active_loras=active_loras, control_vector=control_vector)
+                        # 1. Evaluate up to N-1 without copying logits.
+                        self.eval(
+                            body_tokens,
+                            active_loras=active_loras,
+                            control_vector=control_vector,
+                            copy_logits=False,
+                        )
 
                         # 2. Save the N-1 state snapshot
                         current_history = self._input_ids[:self.n_tokens].tolist()
@@ -1458,11 +1802,21 @@ class Llama:
                             tokens=current_history,
                             seq_id=0
                         )
-                        # 3. Evaluate the final token to refresh logits
-                        self.eval(last_token, active_loras=active_loras, control_vector=control_vector)
+                        # 3. Evaluate final token. Copy logits only if Python-side hooks need them.
+                        self.eval(
+                            last_token,
+                            active_loras=active_loras,
+                            control_vector=control_vector,
+                            copy_logits=copy_logits,
+                        )
                     else:
                         # Standard evaluation or single-token generation step
-                        self.eval(tokens, active_loras=active_loras, control_vector=control_vector)
+                        self.eval(
+                            tokens,
+                            active_loras=active_loras,
+                            control_vector=control_vector,
+                            copy_logits=copy_logits,
+                        )
 
                 # Sample loop
                 while sample_idx < self.n_tokens:
@@ -1613,7 +1967,7 @@ class Llama:
 
         # get pooling information
         pooling_type = self.pooling_type()
-        logits_all = pooling_type == llama_cpp.LLAMA_POOLING_TYPE_NONE
+        logits_all = pooling_type == llama_cpp_lib.LLAMA_POOLING_TYPE_NONE
 
         if self.context_params.embeddings is False:
             raise RuntimeError(
@@ -1621,7 +1975,7 @@ class Llama:
             )
 
         if self.verbose:
-            llama_cpp.llama_perf_context_reset(self._ctx.ctx)
+            llama_cpp_lib.llama_perf_context_reset(self._ctx.ctx)
 
         if isinstance(input, str):
             inputs = [input]
@@ -1635,15 +1989,15 @@ class Llama:
         data: Union[List[List[float]], List[List[List[float]]]] = []
 
         def decode_batch(seq_sizes: List[int]):
-            llama_cpp.llama_memory_clear(llama_cpp.llama_get_memory(self._ctx.ctx), True)
+            llama_cpp_lib.llama_memory_clear(llama_cpp_lib.llama_get_memory(self._ctx.ctx), True)
             self._ctx.decode(self._batch)
             self._batch.reset()
 
             # store embeddings
-            if pooling_type == llama_cpp.LLAMA_POOLING_TYPE_NONE:
+            if pooling_type == llama_cpp_lib.LLAMA_POOLING_TYPE_NONE:
                 pos: int = 0
                 for i, size in enumerate(seq_sizes):
-                    ptr = llama_cpp.llama_get_embeddings(self._ctx.ctx)
+                    ptr = llama_cpp_lib.llama_get_embeddings(self._ctx.ctx)
                     embedding: List[List[float]] = [
                         ptr[pos + j * n_embd : pos + (j + 1) * n_embd]
                         for j in range(size)
@@ -1656,7 +2010,7 @@ class Llama:
                     pos += size
             else:
                 for i in range(len(seq_sizes)):
-                    ptr = llama_cpp.llama_get_embeddings_seq(self._ctx.ctx, i)
+                    ptr = llama_cpp_lib.llama_get_embeddings_seq(self._ctx.ctx, i)
                     embedding: List[float] = ptr[:n_embd]
                     if normalize:
                         embedding = internals.normalize_embedding(embedding)
@@ -1702,11 +2056,11 @@ class Llama:
         decode_batch(s_batch)
 
         if self.verbose:
-            llama_cpp.llama_perf_context_print(self._ctx.ctx)
+            llama_cpp_lib.llama_perf_context_print(self._ctx.ctx)
 
         output = data[0] if isinstance(input, str) else data
 
-        llama_cpp.llama_memory_clear(llama_cpp.llama_get_memory(self._ctx.ctx), True)
+        llama_cpp_lib.llama_memory_clear(llama_cpp_lib.llama_get_memory(self._ctx.ctx), True)
         self.reset()
 
         if return_count:
@@ -1758,6 +2112,13 @@ class Llama:
         seed: Optional[int] = None,
         active_loras: Optional[List[Dict[str, Union[str, float]]]] = None,
         control_vector: Optional[Dict[str, Any]] = None,
+        # Reasoning Budget Params
+        reasoning_budget: int = -1,
+        reasoning_start: str = "<think>",
+        reasoning_end: str = "</think>",
+        reasoning_budget_message: Optional[str] = None,
+        reasoning_start_in_prompt: bool = False,
+        reasoning_start_max_tokens: Optional[int] = 32,
     ) -> Union[
         Iterator[CreateCompletionResponse], Iterator[CreateCompletionStreamResponse]
     ]:
@@ -1862,7 +2223,7 @@ class Llama:
 
         if len(prompt_tokens) >= self._n_ctx:
             raise ValueError(
-                f"Requested tokens ({len(prompt_tokens)}) exceed context window of {llama_cpp.llama_n_ctx(self.ctx)}"
+                f"Requested tokens ({len(prompt_tokens)}) exceed context window of {llama_cpp_lib.llama_n_ctx(self.ctx)}"
             )
 
         if max_tokens is None or max_tokens <= 0:
@@ -1946,8 +2307,14 @@ class Llama:
             seed=seed if seed is not None else self._seed,
             active_loras=active_loras,
             control_vector=control_vector,
+            reasoning_budget=reasoning_budget,
+            reasoning_start=reasoning_start,
+            reasoning_end=reasoning_end,
+            reasoning_budget_message=reasoning_budget_message,
+            reasoning_start_in_prompt=reasoning_start_in_prompt,
+            reasoning_start_max_tokens=reasoning_start_max_tokens,
         ):
-            if llama_cpp.llama_token_is_eog(self._model.vocab, token):
+            if llama_cpp_lib.llama_token_is_eog(self._model.vocab, token):
                 text = self.detokenize(completion_tokens, prev_tokens=prompt_tokens)
                 finish_reason = "stop"
                 break
@@ -2410,6 +2777,13 @@ class Llama:
         grammar_lazy: bool = False,
         active_loras: Optional[List[Dict[str, Union[str, float]]]] = None,
         control_vector: Optional[Dict[str, Any]] = None,
+        # Reasoning Budget Params
+        reasoning_budget: int = -1,
+        reasoning_start: str = "<think>",
+        reasoning_end: str = "</think>",
+        reasoning_budget_message: Optional[str] = None,
+        reasoning_start_in_prompt: bool = False,
+        reasoning_start_max_tokens: Optional[int] = 32,
     ) -> Union[CreateCompletionResponse, Iterator[CreateCompletionStreamResponse]]:
         """Generate text from a prompt.
 
@@ -2454,6 +2828,14 @@ prompt: The prompt to generate text from.
             logits_processor: A list of logits processors to use.
             grammar: A grammar to use for constrained sampling.
             grammar_lazy: If True, enables lazy evaluation.
+            reasoning_budget: Token budget for the first visible reasoning block.
+                -1 disables the sampler, 0 forces an immediate end after reasoning starts,
+                and N > 0 allows at most N generated tokens inside the block.
+            reasoning_start: Token/text sequence that marks the beginning of the first reasoning block.
+            reasoning_end: Token/text sequence that naturally and forcibly ends the reasoning block.
+            reasoning_budget_message: Optional message inserted before reasoning_end when the budget is exhausted.
+            reasoning_start_in_prompt: Set True when the prompt/template already inserted reasoning_start.
+            reasoning_start_max_tokens: Safety window before disabling the sampler for non-reasoning outputs.
             active_loras: A list of dictionaries specifying the LoRA adapters to dynamically apply during generation.
                 Each dictionary must contain a "name" key (matching a LoRA previously loaded into VRAM via `load_lora()`)
                 and an optional "scale" key (float, defaults to 1.0).
@@ -2513,6 +2895,12 @@ prompt: The prompt to generate text from.
             grammar_lazy=grammar_lazy,
             active_loras=active_loras,
             control_vector=control_vector,
+            reasoning_budget=reasoning_budget,
+            reasoning_start=reasoning_start,
+            reasoning_end=reasoning_end,
+            reasoning_budget_message=reasoning_budget_message,
+            reasoning_start_in_prompt=reasoning_start_in_prompt,
+            reasoning_start_max_tokens=reasoning_start_max_tokens,
         )
         if stream:
             chunks: Iterator[CreateCompletionStreamResponse] = completion_or_chunks
@@ -2564,6 +2952,13 @@ prompt: The prompt to generate text from.
         grammar_lazy: bool = False,
         active_loras: Optional[List[Dict[str, Union[str, float]]]] = None,
         control_vector: Optional[Dict[str, Any]] = None,
+        # Reasoning Budget Params
+        reasoning_budget: int = -1,
+        reasoning_start: str = "<think>",
+        reasoning_end: str = "</think>",
+        reasoning_budget_message: Optional[str] = None,
+        reasoning_start_in_prompt: bool = False,
+        reasoning_start_max_tokens: Optional[int] = 32,
     ) -> Union[CreateCompletionResponse, Iterator[CreateCompletionStreamResponse]]:
         """Generate text from a prompt.
 
@@ -2608,6 +3003,14 @@ prompt: The prompt to generate text from.
             logits_processor: A list of logits processors to use.
             grammar: A grammar to use for constrained sampling.
             grammar_lazy: If True, enables lazy evaluation.
+            reasoning_budget: Token budget for the first visible reasoning block.
+                -1 disables the sampler, 0 forces an immediate end after reasoning starts,
+                and N > 0 allows at most N generated tokens inside the block.
+            reasoning_start: Token/text sequence that marks the beginning of the first reasoning block.
+            reasoning_end: Token/text sequence that naturally and forcibly ends the reasoning block.
+            reasoning_budget_message: Optional message inserted before reasoning_end when the budget is exhausted.
+            reasoning_start_in_prompt: Set True when the prompt/template already inserted reasoning_start.
+            reasoning_start_max_tokens: Safety window before disabling the sampler for non-reasoning outputs.
             active_loras: A list of dictionaries specifying the LoRA adapters to dynamically apply during generation.
                 Each dictionary must contain a "name" key (matching a LoRA previously loaded into VRAM via `load_lora()`)
                 and an optional "scale" key (float, defaults to 1.0).
@@ -2667,6 +3070,12 @@ prompt: The prompt to generate text from.
             grammar_lazy=grammar_lazy,
             active_loras=active_loras,
             control_vector=control_vector,
+            reasoning_budget=reasoning_budget,
+            reasoning_start=reasoning_start,
+            reasoning_end=reasoning_end,
+            reasoning_budget_message=reasoning_budget_message,
+            reasoning_start_in_prompt=reasoning_start_in_prompt,
+            reasoning_start_max_tokens=reasoning_start_max_tokens,
         )
 
     def create_chat_completion(
@@ -2717,6 +3126,14 @@ prompt: The prompt to generate text from.
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
         assistant_prefill: bool = False,
+        add_generation_prompt: bool = True,
+        # Reasoning Budget Params
+        reasoning_budget: int = -1,
+        reasoning_start: str = "<think>",
+        reasoning_end: str = "</think>",
+        reasoning_budget_message: Optional[str] = None,
+        reasoning_start_in_prompt: bool = False,
+        reasoning_start_max_tokens: Optional[int] = 32,
     ) -> Union[
         CreateChatCompletionResponse, Iterator[CreateChatCompletionStreamResponse]
     ]:
@@ -2764,6 +3181,14 @@ prompt: The prompt to generate text from.
             logits_processor: A list of logits processors to use.
             grammar: A grammar to use.
             grammar_lazy: If True, enables lazy evaluation.
+            reasoning_budget: Token budget for the first visible reasoning block.
+                -1 disables the sampler, 0 forces an immediate end after reasoning starts,
+                and N > 0 allows at most N generated tokens inside the block.
+            reasoning_start: Token/text sequence that marks the beginning of the first reasoning block.
+            reasoning_end: Token/text sequence that naturally and forcibly ends the reasoning block.
+            reasoning_budget_message: Optional message inserted before reasoning_end when the budget is exhausted.
+            reasoning_start_in_prompt: Set True when the prompt/template already inserted reasoning_start.
+            reasoning_start_max_tokens: Safety window before disabling the sampler for non-reasoning outputs.
             active_loras: A list of dictionaries specifying the LoRA adapters to dynamically apply during generation.
                 Each dictionary must contain a "name" key (matching a LoRA previously loaded into VRAM via `load_lora()`)
                 and an optional "scale" key (float, defaults to 1.0).
@@ -2829,6 +3254,13 @@ prompt: The prompt to generate text from.
             active_loras=active_loras,
             control_vector=control_vector,
             assistant_prefill=assistant_prefill,
+            add_generation_prompt=add_generation_prompt,
+            reasoning_budget=reasoning_budget,
+            reasoning_start=reasoning_start,
+            reasoning_end=reasoning_end,
+            reasoning_budget_message=reasoning_budget_message,
+            reasoning_start_in_prompt=reasoning_start_in_prompt,
+            reasoning_start_max_tokens=reasoning_start_max_tokens,
         )
 
     def create_chat_completion_openai_v1(
@@ -2869,6 +3301,8 @@ prompt: The prompt to generate text from.
             model_path=self.model_path,
             # Model Params
             n_gpu_layers=self.model_params.n_gpu_layers,
+            cpu_moe=self.cpu_moe,
+            n_cpu_moe=self.n_cpu_moe,
             split_mode=self.model_params.split_mode,
             main_gpu=self.model_params.main_gpu,
             tensor_split=self.tensor_split,
@@ -2930,7 +3364,7 @@ prompt: The prompt to generate text from.
             print("Llama.save_state: saving llama state", file=sys.stderr)
 
         # Query the backend for the required buffer size to store the current state.
-        state_size = llama_cpp.llama_state_get_size(self._ctx.ctx)
+        state_size = llama_cpp_lib.llama_state_get_size(self._ctx.ctx)
         if self.verbose:
             print(f"Llama.save_state: got state size: {state_size}", file=sys.stderr)
 
@@ -2941,7 +3375,7 @@ prompt: The prompt to generate text from.
 
         # Copy the raw state data from the internal C context into our Python-managed buffer.
         # Returns the actual number of bytes written (n_bytes).
-        n_bytes = llama_cpp.llama_state_get_data(self._ctx.ctx, llama_state, state_size)
+        n_bytes = llama_cpp_lib.llama_state_get_data(self._ctx.ctx, llama_state, state_size)
         if self.verbose:
             print(f"Llama.save_state: copied llama state: {n_bytes}", file=sys.stderr)
 
@@ -2993,7 +3427,7 @@ prompt: The prompt to generate text from.
         # Copy the raw bytes from the Python object into a C-compatible buffer.
         llama_state = LLamaStateArrayType.from_buffer_copy(state.llama_state)
 
-        if llama_cpp.llama_state_set_data(self._ctx.ctx, llama_state, state_size) != state_size:
+        if llama_cpp_lib.llama_state_set_data(self._ctx.ctx, llama_state, state_size) != state_size:
             raise RuntimeError("Failed to set llama state data")
 
     def n_ctx(self) -> int:

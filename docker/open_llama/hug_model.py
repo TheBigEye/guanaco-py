@@ -40,7 +40,7 @@ def download_file(url, destination):
                         print('.', end='', flush=True)
                         total_downloaded = 0
         print("\nDownload complete.")
-        
+
         # Creating a symbolic link from destination to "model.bin"
         if os.path.isfile("model.bin"):
             os.remove("model.bin")  # remove the existing link if any
@@ -67,7 +67,7 @@ def get_user_choice(model_list):
         print("Invalid input. Please enter a number corresponding to a model.")
     except IndexError:
         print("Invalid choice. Index out of range.")
-    
+
     return None
 
 def main():
