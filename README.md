@@ -79,10 +79,10 @@ If this fails, add `--verbose` to the `pip install` see the full cmake build log
 **Pre-built Wheel **
 
 It is also possible to install a pre-built wheel with basic CPU support.
-CPU wheels are built for Linux and Windows in x86 (32-bit) and x64 (64-bit), for Python 3.9 through 3.14.
+CPU wheels are built for **Linux x64** and **Windows x64**, for Python 3.9 through 3.14.
 
 > [!NOTE]
-> Modern NumPy does not publish pre-built `manylinux_i686` wheels. The Linux x86 Guanaco wheel is generated, but installing it may require building NumPy from source. Windows x86 and both x64 targets use binary NumPy wheels when available.
+> The release workflows intentionally target 64-bit systems only. Linux wheels use the `manylinux_2_34_x86_64` policy; CUDA wheels also remain x64-only.
 
 ```bash
 pip install guanaco-py --extra-index-url https://thebigeye.github.io/guanaco-py/whl/cpu

@@ -1,4 +1,4 @@
-name: Build Wheels (CPU)
+name: Build CPU Wheels
 
 on:
   workflow_dispatch:
@@ -8,8 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  build-cpu:
-    name: CPU ${{ matrix.platform }}
+  build-cpu-x64:
+    name: CPU wheel · ${{ matrix.label }} · CPython 3.9–3.14
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -17,36 +17,19 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux-x64
+            label: Linux x64 · manylinux_2_34
             cibw_archs: x86_64
-            cibw_test_skip: ""
             cibw_build: >-
               cp39-manylinux_x86_64 cp310-manylinux_x86_64
               cp311-manylinux_x86_64 cp312-manylinux_x86_64
               cp313-manylinux_x86_64 cp314-manylinux_x86_64
-          - os: ubuntu-latest
-            platform: linux-x86
-            cibw_archs: i686
-            # NumPy does not publish modern manylinux_i686 wheels. Build the
-            # Guanaco wheel, but avoid compiling NumPy six times just for CI smoke tests.
-            cibw_test_skip: "*-manylinux_i686"
-            cibw_build: >-
-              cp39-manylinux_i686 cp310-manylinux_i686
-              cp311-manylinux_i686 cp312-manylinux_i686
-              cp313-manylinux_i686 cp314-manylinux_i686
           - os: windows-latest
             platform: windows-x64
+            label: Windows x64 · AMD64
             cibw_archs: AMD64
-            cibw_test_skip: ""
             cibw_build: >-
               cp39-win_amd64 cp310-win_amd64 cp311-win_amd64
               cp312-win_amd64 cp313-win_amd64 cp314-win_amd64
-          - os: windows-latest
-            platform: windows-x86
-            cibw_archs: x86
-            cibw_test_skip: ""
-            cibw_build: >-
-              cp39-win32 cp310-win32 cp311-win32
-              cp312-win32 cp313-win32 cp314-win32
 
     steps:
       - name: Checkout Guanaco and llama.cpp
@@ -54,28 +37,47 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build CPU wheels
+      - name: Build and validate CPU wheels
         uses: pypa/cibuildwheel@v3.3.1
         env:
           CIBW_BUILD: ${{ matrix.cibw_build }}
           CIBW_ARCHS: ${{ matrix.cibw_archs }}
           CIBW_SKIP: "*-musllinux_*"
-          CIBW_TEST_SKIP: ${{ matrix.cibw_test_skip }}
           CIBW_BUILD_VERBOSITY: 1
-          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
-          CIBW_MANYLINUX_I686_IMAGE: manylinux_2_28
-          CIBW_ENVIRONMENT: >-
+
+          # llama.cpp now uses C++ symbols newer than the manylinux_2_28
+          # policy permits. AlmaLinux 9's system GCC 11 matches the
+          # manylinux_2_34 GLIBCXX/CXXABI policy, unlike the image's GCC 14.
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_34
+          CIBW_BEFORE_ALL_LINUX: >-
+            dnf install -y gcc gcc-c++ &&
+            /usr/bin/g++ --version
+          CIBW_ENVIRONMENT_LINUX: >-
+            CC=/usr/bin/gcc CXX=/usr/bin/g++
             CMAKE_ARGS="-DGGML_CUDA=OFF -DGGML_METAL=OFF
             -DGGML_VULKAN=OFF -DGGML_BLAS=OFF -DGGML_NATIVE=OFF
             -DGGML_BACKEND_DL=OFF -DGGML_CPU_ALL_VARIANTS=OFF
             -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF
             -DGGML_F16C=OFF -DGGML_SSE42=OFF -DGGML_BMI2=OFF"
+          CIBW_ENVIRONMENT_WINDOWS: >-
+            CMAKE_ARGS="-DGGML_CUDA=OFF -DGGML_METAL=OFF
+            -DGGML_VULKAN=OFF -DGGML_BLAS=OFF -DGGML_NATIVE=OFF
+            -DGGML_BACKEND_DL=OFF -DGGML_CPU_ALL_VARIANTS=OFF
+            -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF
+            -DGGML_F16C=OFF -DGGML_SSE42=OFF -DGGML_BMI2=OFF"
+
+          # Show the exact ABI analysis before repair so future policy
+          # failures identify their required symbols in the Actions log.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+            auditwheel show {wheel} &&
+            auditwheel repair --plat manylinux_2_34_x86_64
+            -w {dest_dir} {wheel}
           CIBW_TEST_COMMAND: >-
             python -c "import importlib.metadata as m; import llama_cpp;
             assert m.version('guanaco-py') == llama_cpp.__version__;
-            print('guanaco-py', llama_cpp.__version__, 'CPU wheel OK')"
+            print('guanaco-py', llama_cpp.__version__, 'CPU x64 wheel OK')"
 
-      - name: Upload CPU wheels
+      - name: Upload CPU x64 wheels
         uses: actions/upload-artifact@v7
         with:
           name: guanaco-py-cpu-${{ matrix.platform }}

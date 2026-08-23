@@ -1,4 +1,4 @@
-name: Build and Publish Wheels
+name: Build Release and Publish
 
 on:
   workflow_dispatch:
@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   version:
+    name: Read guanaco-py version
     runs-on: ubuntu-latest
     outputs:
       value: ${{ steps.version.outputs.value }}
@@ -28,17 +29,17 @@ jobs:
           test -n "$value"
           echo "value=$value" >> "$GITHUB_OUTPUT"
 
-  cpu:
+  build-cpu-wheels:
     needs: version
     uses: ./.github/workflows/build-wheel-cpu.yml
 
-  cuda:
+  build-cuda-wheels:
     needs: version
     uses: ./.github/workflows/build-wheels-cuda.yaml
 
   release-cpu:
-    name: Publish CPU release
-    needs: [version, cpu]
+    name: Release · CPU x64 wheels
+    needs: [version, build-cpu-wheels]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -64,8 +65,8 @@ jobs:
           gh release upload "$tag" dist/*.whl --clobber
 
   release-cuda:
-    name: Publish ${{ matrix.cuda }} release
-    needs: [version, cuda]
+    name: Release · ${{ matrix.cuda }} x64 wheels
+    needs: [version, build-cuda-wheels]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -95,7 +96,7 @@ jobs:
           gh release upload "$tag" dist/*.whl --clobber
 
   pages-index:
-    name: Publish PEP 503 wheel indexes
+    name: Pages · styled PEP 503 wheel index
     needs: [release-cpu, release-cuda]
     runs-on: ubuntu-latest
     environment:
@@ -104,33 +105,19 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Read release assets
+      - name: Checkout index generator
+        uses: actions/checkout@v6
+
+      - name: Read GitHub release assets
         run: gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json
-      - name: Generate CPU and CUDA indexes
-        shell: python
-        run: |
-          import html, json, pathlib, re
-          releases = [r for page in json.load(open("releases.json")) for r in page]
-          channels = {"cpu": []}
-          for release in releases:
-              tag = release["tag_name"]
-              match = re.search(r"-(cu\d+)$", tag)
-              channel = match.group(1) if match else "cpu"
-              for asset in release.get("assets", []):
-                  if asset["name"].endswith(".whl") and "guanaco_py" in asset["name"]:
-                      channels.setdefault(channel, []).append((asset["name"], asset["browser_download_url"]))
-          root = pathlib.Path("site/whl")
-          for channel, assets in channels.items():
-              package = root / channel / "guanaco-py"
-              package.mkdir(parents=True, exist_ok=True)
-              (root / channel / "index.html").write_text(
-                  '<!doctype html><a href="guanaco-py/">guanaco-py</a>\n', encoding="utf-8")
-              links = [f'<a href="{html.escape(url)}">{html.escape(name)}</a><br>' for name, url in sorted(set(assets))]
-              (package / "index.html").write_text('<!doctype html>\n' + '\n'.join(links) + '\n', encoding="utf-8")
-          (root / "index.html").write_text('<!doctype html>\n' + '\n'.join(
-              f'<a href="{html.escape(channel)}/">{html.escape(channel)}</a><br>' for channel in sorted(channels)) + '\n', encoding="utf-8")
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v4
+
+      - name: Generate styled PEP 503 indexes
+        run: python .github/scripts/generate-wheel-index.py releases.json site
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Upload wheel index site
+        uses: actions/upload-pages-artifact@v4
         with:
           path: site
       - name: Deploy GitHub Pages
