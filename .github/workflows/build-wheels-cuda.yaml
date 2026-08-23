@@ -1,8 +1,19 @@
-name: Build CUDA Wheels
+name: CUDA Builds
 
 on:
   workflow_dispatch:
+    inputs:
+      cuda:
+        description: CUDA version
+        required: true
+        type: choice
+        options: [cu121, cu122, cu123, cu124, cu126, cu128, cu131]
   workflow_call:
+    inputs:
+      cuda:
+        description: CUDA channel to build
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,26 +22,47 @@ env:
   CMAKE_BUILD_PARALLEL_LEVEL: "2"
 
 jobs:
-  build-linux-x64:
-    name: CUDA wheel · Linux x64 · ${{ matrix.cuda.short }} · CPython ${{ matrix.python-version }}
+  config:
+    name: Config
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.cuda.outputs.version }}
+      short: ${{ steps.cuda.outputs.short }}
+      arch: ${{ steps.cuda.outputs.arch }}
+      legacy_msvc: ${{ steps.cuda.outputs.legacy_msvc }}
+    steps:
+      - name: Resolve CUDA settings
+        id: cuda
+        shell: bash
+        run: |
+          case "${{ inputs.cuda }}" in
+            cu121) version="12.1.1"; arch="75;80;86;89;90"; legacy_msvc="true" ;;
+            cu122) version="12.2.2"; arch="75;80;86;89;90"; legacy_msvc="true" ;;
+            cu123) version="12.3.2"; arch="75;80;86;89;90"; legacy_msvc="true" ;;
+            cu124) version="12.4.1"; arch="75;80;86;89;90"; legacy_msvc="false" ;;
+            cu126) version="12.6.3"; arch="75;80;86;89;90"; legacy_msvc="false" ;;
+            cu128) version="12.8.1"; arch="75;80;86;89;90;100;120"; legacy_msvc="false" ;;
+            cu131) version="13.1.0"; arch="75;80;86;89;90;100;120"; legacy_msvc="false" ;;
+            *) echo "Unsupported CUDA channel: ${{ inputs.cuda }}" >&2; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "short=${{ inputs.cuda }}" >> "$GITHUB_OUTPUT"
+          echo "arch=$arch" >> "$GITHUB_OUTPUT"
+          echo "legacy_msvc=$legacy_msvc" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux · Py ${{ matrix.python }}
+    needs: config
     runs-on: ubuntu-22.04
     container:
-      image: nvidia/cuda:${{ matrix.cuda.version }}-devel-ubuntu22.04
+      image: nvidia/cuda:${{ needs.config.outputs.version }}-devel-ubuntu22.04
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
-        cuda:
-          - { version: "12.1.1", short: cu121, arch: "75;80;86;89;90" }
-          - { version: "12.2.2", short: cu122, arch: "75;80;86;89;90" }
-          - { version: "12.3.2", short: cu123, arch: "75;80;86;89;90" }
-          - { version: "12.4.1", short: cu124, arch: "75;80;86;89;90" }
-          - { version: "12.6.3", short: cu126, arch: "75;80;86;89;90" }
-          - { version: "12.8.1", short: cu128, arch: "75;80;86;89;90;100;120" }
-          - { version: "13.1.0", short: cu131, arch: "75;80;86;89;90;100;120" }
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
-      - name: Install Linux build tools
+      - name: Install build tools
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -38,29 +70,29 @@ jobs:
           apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev
           rm -rf /var/lib/apt/lists/*
 
-      - name: Checkout Guanaco and llama.cpp
+      - name: Checkout
         uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - name: Install uv and Python ${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.python }}
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          $HOME/.local/bin/uv python install ${{ matrix.python-version }}
-          $HOME/.local/bin/uv venv --python ${{ matrix.python-version }} .venv
+          $HOME/.local/bin/uv python install ${{ matrix.python }}
+          $HOME/.local/bin/uv venv --python ${{ matrix.python }} .venv
           $HOME/.local/bin/uv pip install --python .venv/bin/python build
 
-      - name: Verify toolchain
+      - name: Show toolchain
         run: |
           .venv/bin/python --version
           nvcc --version
 
-      - name: Build CUDA wheel
+      - name: Build
         env:
           CMAKE_ARGS: >-
             -DGGML_CUDA=ON
-            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda.arch }}
+            -DCMAKE_CUDA_ARCHITECTURES=${{ needs.config.outputs.arch }}
             -DGGML_CUDA_FORCE_MMQ=OFF
             -DGGML_NATIVE=OFF
             -DLLAMA_BUILD_EXAMPLES=OFF
@@ -69,55 +101,47 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -lcuda"
         run: .venv/bin/python -m build --wheel
 
-      - name: Upload Linux CUDA wheel
+      - name: Upload
         uses: actions/upload-artifact@v7
         with:
-          name: guanaco-py-cuda-linux-x64-${{ matrix.cuda.short }}-py${{ matrix.python-version }}
+          name: guanaco-py-cuda-linux-x64-${{ needs.config.outputs.short }}-py${{ matrix.python }}
           path: dist/*.whl
           if-no-files-found: error
 
-  build-windows-x64:
-    name: CUDA wheel · Windows x64 · ${{ matrix.cuda.short }} · CPython ${{ matrix.python-version }}
+  windows:
+    name: Windows · Py ${{ matrix.python }}
+    needs: config
     runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
-        cuda:
-          - { version: "12.1.1", short: cu121, arch: "75;80;86;89;90", legacy_msvc: true }
-          - { version: "12.2.2", short: cu122, arch: "75;80;86;89;90", legacy_msvc: true }
-          - { version: "12.3.2", short: cu123, arch: "75;80;86;89;90", legacy_msvc: true }
-          - { version: "12.4.1", short: cu124, arch: "75;80;86;89;90", legacy_msvc: false }
-          - { version: "12.6.3", short: cu126, arch: "75;80;86;89;90", legacy_msvc: false }
-          - { version: "12.8.1", short: cu128, arch: "75;80;86;89;90;100;120", legacy_msvc: false }
-          - { version: "13.1.0", short: cu131, arch: "75;80;86;89;90;100;120", legacy_msvc: false }
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
-      - name: Add MSBuild to PATH
+      - name: Add MSBuild
         uses: microsoft/setup-msbuild@v3
         with:
           msbuild-architecture: x64
 
-      - name: Checkout Guanaco and llama.cpp
+      - name: Checkout
         uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - name: Set up Python ${{ matrix.python-version }} x64
+      - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python }}
           architecture: x64
 
-      - name: Install CUDA ${{ matrix.cuda.version }}
-        id: cuda-toolkit
+      - name: Install CUDA ${{ needs.config.outputs.version }}
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
-          cuda: ${{ matrix.cuda.version }}
+          cuda: ${{ needs.config.outputs.version }}
           method: network
           use-github-cache: false
 
-      - name: Set up MSVC environment for nvcc
+      - name: Set up MSVC
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
@@ -126,47 +150,43 @@ jobs:
           echo LIB=%LIB%>>%GITHUB_ENV%
           echo LIBPATH=%LIBPATH%>>%GITHUB_ENV%
 
-      - name: Install build dependencies
+      - name: Install dependencies
         shell: pwsh
-        run: python -m pip install --upgrade pip build
+        run: python -m pip install --upgrade pip build ninja
 
-      - name: Verify toolchain
+      - name: Show toolchain
         shell: pwsh
         run: |
           python --version
           nvcc --version
 
-      - name: Build CUDA wheel
+      - name: Build
         shell: pwsh
         env:
           CMAKE_GENERATOR: Ninja
         run: |
-          # CUDA 12.1-12.3 predate the MSVC toolset currently installed on
-          # windows-2022. CUDAFLAGS is read by CMake while it identifies nvcc,
-          # so the compatibility flags must be present before configuration.
-          if ('${{ matrix.cuda.legacy_msvc }}' -eq 'true') {
+          if ('${{ needs.config.outputs.legacy_msvc }}' -eq 'true') {
             $legacyFlags = '--allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH'
             $env:CUDAFLAGS = $legacyFlags
-            Write-Host "Using legacy CUDA/MSVC compatibility flags: $legacyFlags"
+            Write-Host "Using legacy CUDA/MSVC flags: $legacyFlags"
           } else {
             Remove-Item Env:CUDAFLAGS -ErrorAction SilentlyContinue
           }
 
           $env:CMAKE_ARGS = @(
             '-DGGML_CUDA=ON'
-            '-DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda.arch }}'
+            '-DCMAKE_CUDA_ARCHITECTURES=${{ needs.config.outputs.arch }}'
             '-DGGML_CUDA_FORCE_MMQ=OFF'
             '-DGGML_NATIVE=OFF'
             '-DLLAMA_BUILD_EXAMPLES=OFF'
             '-DLLAMA_BUILD_TESTS=OFF'
             '-DLLAMA_BUILD_SERVER=OFF'
           ) -join ' '
-          python -m pip install ninja
           python -m build --wheel
 
-      - name: Upload Windows CUDA wheel
+      - name: Upload
         uses: actions/upload-artifact@v7
         with:
-          name: guanaco-py-cuda-windows-x64-${{ matrix.cuda.short }}-py${{ matrix.python-version }}
+          name: guanaco-py-cuda-windows-x64-${{ needs.config.outputs.short }}-py${{ matrix.python }}
           path: dist/*.whl
           if-no-files-found: error

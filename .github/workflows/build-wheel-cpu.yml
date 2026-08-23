@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build-cpu-x64:
-    name: CPU wheel · ${{ matrix.label }} · CPython 3.9–3.14
+    name: ${{ matrix.label }} · Py 3.9–3.14
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
