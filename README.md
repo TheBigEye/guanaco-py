@@ -79,6 +79,10 @@ If this fails, add `--verbose` to the `pip install` see the full cmake build log
 **Pre-built Wheel **
 
 It is also possible to install a pre-built wheel with basic CPU support.
+CPU wheels are built for Linux and Windows in x86 (32-bit) and x64 (64-bit), for Python 3.9 through 3.14.
+
+> [!NOTE]
+> Modern NumPy does not publish pre-built `manylinux_i686` wheels. The Linux x86 Guanaco wheel is generated, but installing it may require building NumPy from source. Windows x86 and both x64 targets use binary NumPy wheels when available.
 
 ```bash
 pip install guanaco-py --extra-index-url https://thebigeye.github.io/guanaco-py/whl/cpu
@@ -169,9 +173,10 @@ pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 **Pre-built Wheel**
 
 It is also possible to install a pre-built wheel with CUDA support. As long as your system meets some requirements:
+CUDA wheels are built for Linux x64 and Windows x64 only. NVIDIA CUDA does not support 32-bit x86 builds.
 
-- CUDA Version is 12.1, 12.2, 12.3 or 12.4
-- Python Version is 3.9, 3.10, 3.11, 3.12 or 3.13
+- CUDA Version is 12.1, 12.2, 12.3, 12.4, 12.6, 12.8 or 13.1
+- Python Version is 3.9, 3.10, 3.11, 3.12, 3.13 or 3.14
 
 ```bash
 pip install guanaco-py \
@@ -183,6 +188,9 @@ Where `<cuda-version>` is one of the following:
 - `cu122`: CUDA 12.2
 - `cu123`: CUDA 12.3
 - `cu124`: CUDA 12.4
+- `cu126`: CUDA 12.6
+- `cu128`: CUDA 12.8
+- `cu131`: CUDA 13.1
 
 For example, to install the CUDA 12.1 wheel:
 

@@ -85,7 +85,7 @@ DEFAULT_LOG_FILTERS = [
 
 VerbosityLike = Union[bool, int, str, None]
 
-logger = logging.getLogger("llama-cpp-python")
+logger = logging.getLogger("guanaco-py")
 
 
 @dataclass

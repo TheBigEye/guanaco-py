@@ -12,7 +12,7 @@ class LlamaLLM(LLM):
 
     @property
     def _llm_type(self) -> str:
-        return "llama-cpp-python"
+        return "guanaco-py"
 
     def __init__(self, model_path: str, **kwargs: Any):
         model_path = model_path

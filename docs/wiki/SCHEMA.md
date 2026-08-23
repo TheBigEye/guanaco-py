@@ -1,15 +1,15 @@
-# LLM Wiki Schema – llama-cpp-python
+# LLM Wiki Schema – guanaco-py
 
 **Schema Metadata**:
 - **Author**: JamePeng
 - **Maintainer**: LLM-assisted documentation workflow
-- **Project**: [llama-cpp-python](https://github.com/JamePeng/llama-cpp-python) wiki
+- **Project**: [guanaco-py](https://github.com/TheBigEye/guanaco-py) wiki
 - **Last Modified**: 2026-06-02
 - **Version Target**: latest source code
 - **Schema Version**: 0.4
 
 **Purpose**:
-- Maintain a living, always-up-to-date, structured documentation wiki for the `llama-cpp-python` library, with LLMs acting as the primary documentation maintainer.
+- Maintain a living, always-up-to-date, structured documentation wiki for the `guanaco-py` library, with LLMs acting as the primary documentation maintainer.
 - The wiki must help users understand the latest public API, core classes, modules, configuration options, examples, and migration paths based on the current source code.
 - The wiki should explain not only *how to call an API*, but also *what role the class/module plays in the library*, *how its state is configured*, and *how users should choose between related APIs*.
 - The schema also defines the expected wiki directory layout, page ownership, and update rules so new pages can be generated consistently.

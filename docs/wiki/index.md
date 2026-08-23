@@ -1,8 +1,8 @@
-# llama-cpp-python Wiki
+# guanaco-py Wiki
 
-Welcome to the `llama-cpp-python` wiki :)
+Welcome to the `guanaco-py` wiki :)
 
-This wiki provides structured, source-code-aligned documentation for the public APIs, core classes, modules, examples, and development notes of `llama-cpp-python`.
+This wiki provides structured, source-code-aligned documentation for the public APIs, core classes, modules, examples, and development notes of `guanaco-py`.
 
 The documentation is maintained with the help of LLMs, but the source of truth is always the latest code in `llama_cpp/`.
 
@@ -12,7 +12,7 @@ The documentation is maintained with the help of LLMs, but the source of truth i
 
 ### Getting Started
 
-Start here if you are installing or rebuilding `llama-cpp-python`.
+Start here if you are installing or rebuilding `guanaco-py`.
 
 | Page | Description |
 |---|---|
@@ -22,7 +22,7 @@ Start here if you are installing or rebuilding `llama-cpp-python`.
 
 ### Core API
 
-Start here if you are using `llama-cpp-python` directly.
+Start here if you are using `guanaco-py` directly.
 
 | Page | Description |
 |---|---|
@@ -40,13 +40,24 @@ These pages document major source modules and related classes.
 | [modules/LlamaEmbedding\|Llama Embedding] | Embedding-related APIs and usage patterns. |
 | [modules/LlamaGrammar\|Llama Grammar] |  Provides grammar utilities for constrained generation. |
 | [modules/LlamaSpeculative\|Llama Speculative Decoding] | Draft model interfaces and prompt-based speculative decoding helpers. |
-| [modules/Logger\|Logger] |  provides configuration for runtime logging in `llama-cpp-python`, wrapping the native `ggml`/`llama.cpp` logging infrastructure. It controls verbosity levels, output streams, substring filtering, and callback integration, allowing fine-grained control over diagnostic and informational output from the underlying bindings. |
+| [modules/Logger\|Logger] |  provides configuration for runtime logging in `guanaco-py`, wrapping the native `ggml`/`llama.cpp` logging infrastructure. It controls verbosity levels, output streams, substring filtering, and callback integration, allowing fine-grained control over diagnostic and informational output from the underlying bindings. |
+
+---
+
+### Features
+
+Workflow guides combine related classes and configuration into complete usage
+patterns.
+
+| Page | Description |
+|---|---|
+| [features/embeddings-rerank\|Embeddings and Reranking] | Sentence embeddings, token-level vectors, normalization, streaming batches, similarity output, and cross-encoder reranking. |
 
 ---
 
 ### Development
 
-This section contains maintainer-facing development notes, workflows, and LLM-assisted helper tools for working on `llama-cpp-python`.
+This section contains maintainer-facing development notes, workflows, and LLM-assisted helper tools for working on `guanaco-py`.
 
 #### Pages
 
@@ -71,18 +82,18 @@ These pages define how the wiki should be written, updated, and reviewed.
 
 If you are new to this wiki, read the pages in this order:
 
-1. [[install|Installation](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/install.md)]
-2. [[core/Llama|Llama](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/core/Llama.md)]
-3. [[modules/LlamaCache|Llama Cache](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/modules/LlamaCache.md)]
-4. [[modules/LlamaEmbedding|Llama Embedding](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/modules/LlamaEmbedding.md)]
-5. [[modules/LlamaGrammar|Llama Grammar](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/modules/LlamaGrammar.md)]
-6. [[modules/LlamaSpeculative|Llama Speculative Decoding](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/modules/LlamaSpeculative.md)]
-7. [[modules/Logger\|Logger](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/modules/Logger.md)]
-8. [[development/Git Commit Generation Agent](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/development/git-commit-generation-agent.md)]
+1. [[install|Installation](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/install.md)]
+2. [[core/Llama|Llama](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/core/Llama.md)]
+3. [[modules/LlamaCache|Llama Cache](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/modules/LlamaCache.md)]
+4. [[modules/LlamaEmbedding|Llama Embedding](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/modules/LlamaEmbedding.md)]
+5. [[modules/LlamaGrammar|Llama Grammar](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/modules/LlamaGrammar.md)]
+6. [[modules/LlamaSpeculative|Llama Speculative Decoding](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/modules/LlamaSpeculative.md)]
+7. [[modules/Logger\|Logger](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/modules/Logger.md)]
+8. [[development/Git Commit Generation Agent](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/development/git-commit-generation-agent.md)]
 
 If you are contributing documentation, start with:
-1. [[SCHEMA|Wiki Schema](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/SCHEMA.md)]
-2. [[contributing-to-wiki|Contributing to the Wiki](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/contributing-to-wiki.md)]
+1. [[SCHEMA|Wiki Schema](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/SCHEMA.md)]
+2. [[contributing-to-wiki|Contributing to the Wiki](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/contributing-to-wiki.md)]
 
 ---
 
@@ -99,6 +110,7 @@ Currently available pages:
 - `modules/LlamaGrammar.md`
 - `modules/LlamaSpeculative.md`
 - `modules/Logger.md`
+- `features/embeddings-rerank.md`
 - `development/git-commit-generation-agent.md`
 - `SCHEMA.md`
 - `contributing-to-wiki.md`
@@ -136,7 +148,7 @@ This wiki follows a few core rules:
 
 ## Project Links
 
-- GitHub: [llama-cpp-python](https://github.com/JamePeng/llama-cpp-python)
-- Installation guide: [install](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/install.md)
-- Wiki schema: [SCHEMA](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/SCHEMA.md)
-- Contribution guide: [contributing-to-wiki](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/contributing-to-wiki.md)
+- GitHub: [guanaco-py](https://github.com/TheBigEye/guanaco-py)
+- Installation guide: [install](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/install.md)
+- Wiki schema: [SCHEMA](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/SCHEMA.md)
+- Contribution guide: [contributing-to-wiki](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/contributing-to-wiki.md)

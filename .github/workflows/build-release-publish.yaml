@@ -1,415 +1,138 @@
 name: Build and Publish Wheels
 
-# NOTE: This was a headcache to set up GitHub Actions for building and publishing wheels.
-# - This workflow builds wheels for CPU and CUDA (12.1 to 12.4) on multiple Python versions.
-# - It creates GitHub Releases for each build and uploads the wheels there.
-# - It generates a PEP 503-compliant simple index for installing via pip from GitHub Pages.
-# - The workflow is triggered on new tags (v*), manual dispatch, and weekly schedule.
-# This could broke on any changes to the repo structure or GitHub Actions environment. (i need make this more robust eventually)
-
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
 
-# permissions needed for releases and GitHub Pages
 permissions:
   contents: write
   pages: write
   id-token: write
 
-# limit concurrent, i mean, don't run multiple builds at once
 concurrency:
-  group: "pages"
+  group: guanaco-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  get_version:
-    name: Get Version
+  version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.set-version.outputs.version }}
+      value: ${{ steps.version.outputs.value }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Extract version
-        id: set-version
-
-        # extract __version__ from llama_cpp/__init__.py
+      - uses: actions/checkout@v6
+      - id: version
+        shell: bash
         run: |
-          version=$(grep '__version__ =' llama_cpp/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "version=$version" >> $GITHUB_OUTPUT
+          value=$(sed -n 's/__version__ = "\([^"]*\)"/\1/p' llama_cpp/__init__.py)
+          test -n "$value"
+          echo "value=$value" >> "$GITHUB_OUTPUT"
 
-  build_cpu:
-    needs: get_version
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux
-            python-version: "3.13"
-            cibw_build: cp39-manylinux_x86_64 cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64 cp314-manylinux_x86_64
-            cibw_skip: "*-musllinux_*"
-            cibw_image: manylinux_2_28
-            cibw_repair: ""
-          - os: windows-latest
-            platform: windows
-            python-version: "3.13"
-            cibw_build: cp39-win_amd64 cp310-win_amd64 cp311-win_amd64 cp312-win_amd64 cp313-win_amd64 cp314-win_amd64
-            cibw_skip: ""
-            cibw_image: ""
-            cibw_repair: ""
+  cpu:
+    needs: version
+    uses: ./.github/workflows/build-wheel-cpu.yml
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+  cuda:
+    needs: version
+    uses: ./.github/workflows/build-wheels-cuda.yaml
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install cibuildwheel
-        run: uv pip install --system -U cibuildwheel
-
-      - name: Build wheels (CPU only)
-        env:
-          CIBW_BUILD: ${{ matrix.cibw_build }}
-          CIBW_SKIP: ${{ matrix.cibw_skip }}
-          CIBW_BUILD_VERBOSITY: 1
-          CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.cibw_image }}
-          CIBW_REPAIR_WHEEL_COMMAND: ${{ matrix.cibw_repair }}
-          CIBW_ENVIRONMENT: >-
-            CMAKE_ARGS="-DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF -DGGML_BLAS=OFF -DGGML_NATIVE=OFF"
-        run: cibuildwheel --output-dir wheelhouse
-
-      - name: List built wheels (Linux)
-        if: runner.os == 'Linux'
-        run: ls -lh wheelhouse/*.whl
-
-      - name: List built wheels (Windows)
-        if: runner.os == 'Windows'
-        run: Get-ChildItem wheelhouse/*.whl | Format-Table -AutoSize Name, Length, LastWriteTime
-
-      - name: Upload wheels as artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: wheels-cpu-${{ matrix.platform }}
-          path: wheelhouse/*.whl
-
-  build_cuda:
-    needs: get_version
-    runs-on: ubuntu-latest
-    container:
-      image: nvidia/cuda:${{ matrix.cuda_config.ver }}-devel-ubuntu22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        cuda_config:
-          - ver: 12.1.1
-            short: cu121
-            arch: 75;80;86;89;90
-          - ver: 12.2.2
-            short: cu122
-            arch: 75;80;86;89;90
-          - ver: 12.3.2
-            short: cu123
-            arch: 75;80;86;89;90
-          - ver: 12.4.1
-            short: cu124
-            arch: 75;80;86;89;90
-        pyver: ["3.10", "3.11", "3.12", "3.13"]
-    name: CUDA ${{ matrix.cuda_config.ver }} Py ${{ matrix.pyver }}
-    steps:
-      - name: Install system dependencies
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          echo "tzdata tzdata/Areas select America" | debconf-set-selections
-          echo "tzdata tzdata/Zones/America select New_York" | debconf-set-selections
-          ln -fs /usr/share/zoneinfo/America/New_York /etc/localtime
-
-          apt update && apt install -y software-properties-common git curl build-essential cmake libssl-dev
-          add-apt-repository ppa:deadsnakes/ppa -y
-          apt update
-          apt install -y python${{ matrix.pyver }} python${{ matrix.pyver }}-dev python${{ matrix.pyver }}-venv
-
-      - name: Set Python symlink and install pip + uv
-        run: |
-          update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${{ matrix.pyver }} 1
-          update-alternatives --install /usr/bin/python python /usr/bin/python${{ matrix.pyver }} 1
-
-          if [[ "${{ matrix.pyver }}" < "3.12" || "${{ matrix.pyver }}" == "3.11" ]]; then
-            python -m ensurepip --upgrade
-          else
-            curl https://bootstrap.pypa.io/get-pip.py | python --
-          fi
-
-          python -m pip install --upgrade uv
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Verify CUDA and Python
-        run: |
-          python --version
-          uv --version
-          cmake --version
-          nvcc --version
-          nvidia-smi || true
-
-      - name: Install build dependencies
-        run: |
-          uv pip install --system build wheel setuptools packaging
-
-      - name: Build wheel
-        env:
-          VERBOSE: 1
-          CMAKE_ARGS: >-
-            -DGGML_CUDA=on
-            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda_config.arch }}
-            -DGGML_CUDA_FORCE_MMQ=OFF
-            -DGGML_AVX=off -DGGML_AVX2=off -DGGML_FMA=off -DGGML_F16C=off
-            -DLLAMA_BUILD_EXAMPLES=OFF
-            -DLLAMA_BUILD_TESTS=OFF
-            -DLLAMA_BUILD_SERVER=OFF
-            -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -lcuda"
-        run: python -m build --wheel
-
-      - name: List wheels
-        run: ls -lh dist/*.whl
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: wheel-cuda-${{ matrix.pyver }}-${{ matrix.cuda_config.short }}
-          path: dist/*.whl
-
-  # Collect and Release Jobs
-  # Here we collect the built wheels and create GitHub Releases for each configuration
-  # if a release with the same tag exists, we delete it first to avoid conflicts
-  # then we create a new release and upload the wheels, overwriting existing assets if any
-  # This ensures that the latest wheels are always available under the same release tags
-
-  collect_cpu:
-    name: Collect and Release CPU Wheels
-    needs: [get_version, build_cpu]
+  release-cpu:
+    name: Publish CPU release
+    needs: [version, cpu]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.value }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Ensure tag is pushed
-        run: |
-          git tag -f "v${{ needs.get_version.outputs.version }}"
-          git push -f origin "v${{ needs.get_version.outputs.version }}"
-
-      - name: Download Linux CPU wheels
-        uses: actions/download-artifact@v8
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
         with:
-          name: wheels-cpu-linux
-          path: dist
-
-      - name: Download Windows CPU wheels
-        uses: actions/download-artifact@v8
-        with:
-          name: wheels-cpu-windows
-          path: dist
-
-      - name: Delete existing release (if exists)
-        run: gh release delete "v${{ needs.get_version.outputs.version }}" --cleanup-tag --yes || true
-
-      - name: Create release
-        run: |
-          tag="v${{ needs.get_version.outputs.version }}"
-          gh release create "$tag" --title "v${{ needs.get_version.outputs.version }}" --generate-notes
-
-      - name: Upload wheels
-        run: gh release upload "v${{ needs.get_version.outputs.version }}" dist/*.whl --clobber
-
-  collect_cuda:
-    name: Collect and Release CUDA ${{ matrix.short }}
-    needs: [get_version, build_cuda]
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        short: [cu121, cu122, cu123, cu124]
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download wheels for ${{ matrix.short }}
-        uses: actions/download-artifact@v8
-        with:
-          pattern: wheel-cuda-*-${{ matrix.short }}
+          pattern: guanaco-py-cpu-*
           path: dist
           merge-multiple: true
-
-      - name: Delete existing release (if exists)
-        run: gh release delete "v${{ needs.get_version.outputs.version }}-${{ matrix.short }}" --yes || true
-
-      - name: Create tag and release
+      - name: Create or update CPU release
+        shell: bash
         run: |
-          tag="v${{ needs.get_version.outputs.version }}-${{ matrix.short }}"
-          git tag -f "$tag"
-          git push -f origin "$tag"
-          gh release create "$tag" --title "v${{ needs.get_version.outputs.version }}-${{ matrix.short }}" --notes "Automated CUDA ${{ matrix.short }} build"
+          tag="v${VERSION}"
+          git fetch --tags --force
+          if ! git rev-parse "$tag" >/dev/null 2>&1; then
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "$tag"
+          fi
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "guanaco-py ${VERSION} (CPU)" --generate-notes
+          gh release upload "$tag" dist/*.whl --clobber
 
-      - name: Upload wheels
-        run: gh release upload "v${{ needs.get_version.outputs.version }}-${{ matrix.short }}" dist/*.whl --clobber
-
-
-  # Generate PEP 503-compliant simple index for pip installation from GitHub Pages
-  # See: https://peps.python.org/pep-0503/
-  generate_pypi_index:
-    name: Generate PyPI Index
-    needs: [get_version, collect_cpu, collect_cuda]
+  release-cuda:
+    name: Publish ${{ matrix.cuda }} release
+    needs: [version, cuda]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda: [cu121, cu122, cu123, cu124, cu126, cu128, cu131]
     env:
-      GITHUB_TOKEN: ${{ github.token }}
-
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.value }}
     steps:
-      - name: Create base directory
-        # TODO: make this less hardcoded
-        run: mkdir -p dist/whl/{cpu,cu121,cu122,cu123,cu124}
-
-      - name: Generate PEP 503 indices
-        env:
-          VERSION: ${{ needs.get_version.outputs.version }}
-          REPO: ${{ github.repository }}
-
-        # Due to eventual consistency delays in GitHub Releases API, we implement retries here
-        # so that the action waits for the releases to be available and avoid missing assets and wheels.
-        # Yes, i could have a external script, but this is easier to manage in one file for now.
-        run: |
-          python - << 'PYEOF'
-          import os
-          import requests
-          import time
-
-          repo = os.environ['REPO']
-          version = os.environ['VERSION']
-          token = os.environ['GITHUB_TOKEN']
-
-          package_name = "guanaco-py"
-
-          # Define configurations and their corresponding release tags
-          # by example: 'cu121' -> 'v{version}-cu121'
-          configs = {
-              'cpu': {'tag': f'v{version}', 'label': 'CPU'},
-              'cu121': {'tag': f'v{version}-cu121', 'label': 'CUDA 12.1'},
-              'cu122': {'tag': f'v{version}-cu122', 'label': 'CUDA 12.2'},
-              'cu123': {'tag': f'v{version}-cu123', 'label': 'CUDA 12.3'},
-              'cu124': {'tag': f'v{version}-cu124', 'label': 'CUDA 12.4'},
-          }
-
-          headers = {'Authorization': f'token {token}', 'Accept': 'application/vnd.github.v3+json'}
-          available_configs = []
-
-          print(f"Repo: {repo}")
-          print(f"Version: {version}")
-          print(f"Package: {package_name}")
-
-          # Process each configuration
-          # For each, fetch the release info and generate the simple index files
-          for config, info in configs.items():
-              tag = info['tag']
-              url = f'https://api.github.com/repos/{repo}/releases/tags/{tag}'
-              wheels = []
-
-              print(f"Processing {info['label']} with tag {tag}")
-              print(f"URL: {url}")
-
-              for attempt in range(5):
-                  print(f"Attempt {attempt+1} for {tag}")
-                  response = requests.get(url, headers=headers)
-                  print(f"Response status: {response.status_code}")
-                  if response.status_code == 200:
-                      data = response.json()
-                      print(f"Release data keys: {list(data.keys())}")
-                      assets = data.get('assets', [])
-                      print(f"Number of assets: {len(assets)}")
-                      wheels = sorted([a['name'] for a in assets if a['name'].endswith('.whl')])
-                      print(f"Wheels found: {wheels}")
-                      break
-                  else:
-                      print(f"Response text: {response.text}")
-                      print(f"Attempt {attempt+1}: Waiting for release {tag}...")
-                      time.sleep(60) # We wait one minute, the Github API sometimes sucks!
-
-              if not wheels:
-                  print(f"No wheels for {info['label']}")
-                  continue
-
-              # Simple index: /whl/{config}/index.html
-              config_dir = f'dist/whl/{config}'
-              os.makedirs(f'{config_dir}/{package_name}', exist_ok=True)
-
-              with open(f'{config_dir}/index.html', 'w') as f:
-                  f.write('<!DOCTYPE html><html><head><title>simple index</title></head><body>\n')
-                  f.write(f'    <a href="{package_name}/">{package_name}</a><br/>\n')
-                  f.write('</body></html>\n')
-
-              # Project page: /whl/{config}/{package_name}/index.html
-              with open(f'{config_dir}/{package_name}/index.html', 'w') as f:
-                  f.write(f'<!DOCTYPE html><html><head><title>Links for {package_name}</title></head><body>\n')
-                  f.write(f'    <h1>Links for {package_name}</h1>\n')
-                  for wheel in wheels:
-                      url = f"https://github.com/{repo}/releases/download/{tag}/{wheel}"
-                      f.write(f'    <a href="{url}">{wheel}</a><br/>\n')
-                  f.write('</body></html>\n')
-
-              print(f"Generated index for {info['label']} ({len(wheels)} wheels)")
-              available_configs.append((config, info['label']))
-
-          root_lines = [
-              '<!DOCTYPE html><html><head><title>guanaco-py - PyPI Index</title></head><body>',
-              '<h1>🦙 Guanaco Wheels</h1>',
-              '<p>Pre-compiled wheels with CPU and CUDA support.</p>',
-              '<p>Note: pip may warn about missing hashes — safe (direct GitHub downloads).</p>',
-          ]
-          for config, label in available_configs:
-              index_url = f"https://{repo.split('/')[0]}.github.io/{repo.split('/')[1]}/whl/{config}/"
-              root_lines.extend([
-                  f'<h2>{label}</h2>',
-                  '<p><strong>Install:</strong></p>',
-                  f'<p><code>pip install {package_name} --extra-index-url {index_url}</code></p>',
-                  f'<p><strong>Force wheels:</strong></p>',
-                  f'<p><code>pip install {package_name} --only-binary=:all: --extra-index-url {index_url}</code></p>',
-              ])
-
-          root_lines += ['<hr/><p>Generated by GitHub Actions</p></body></html>']
-          with open('dist/index.html', 'w') as f:
-              f.write('\n'.join(root_lines))
-
-          print("Generated root index")
-          print(f"Available configs: {available_configs}")
-          PYEOF
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
         with:
+          pattern: guanaco-py-cuda-*-${{ matrix.cuda }}-*
           path: dist
+          merge-multiple: true
+      - name: Create or update CUDA release
+        shell: bash
+        run: |
+          tag="v${VERSION}-${{ matrix.cuda }}"
+          git fetch --tags --force
+          if ! git rev-parse "$tag" >/dev/null 2>&1; then
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "$tag"
+          fi
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "guanaco-py ${VERSION} (${{ matrix.cuda }})" --generate-notes
+          gh release upload "$tag" dist/*.whl --clobber
 
-  deploy_pages:
-    name: Deploy to GitHub Pages
-    needs: generate_pypi_index
+  pages-index:
+    name: Publish PEP 503 wheel indexes
+    needs: [release-cpu, release-cuda]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Deploy
-        uses: actions/deploy-pages@v5
+      - name: Read release assets
+        run: gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json
+      - name: Generate CPU and CUDA indexes
+        shell: python
+        run: |
+          import html, json, pathlib, re
+          releases = [r for page in json.load(open("releases.json")) for r in page]
+          channels = {"cpu": []}
+          for release in releases:
+              tag = release["tag_name"]
+              match = re.search(r"-(cu\d+)$", tag)
+              channel = match.group(1) if match else "cpu"
+              for asset in release.get("assets", []):
+                  if asset["name"].endswith(".whl") and "guanaco_py" in asset["name"]:
+                      channels.setdefault(channel, []).append((asset["name"], asset["browser_download_url"]))
+          root = pathlib.Path("site/whl")
+          for channel, assets in channels.items():
+              package = root / channel / "guanaco-py"
+              package.mkdir(parents=True, exist_ok=True)
+              (root / channel / "index.html").write_text(
+                  '<!doctype html><a href="guanaco-py/">guanaco-py</a>\n', encoding="utf-8")
+              links = [f'<a href="{html.escape(url)}">{html.escape(name)}</a><br>' for name, url in sorted(set(assets))]
+              (package / "index.html").write_text('<!doctype html>\n' + '\n'.join(links) + '\n', encoding="utf-8")
+          (root / "index.html").write_text('<!doctype html>\n' + '\n'.join(
+              f'<a href="{html.escape(channel)}/">{html.escape(channel)}</a><br>' for channel in sorted(channels)) + '\n', encoding="utf-8")
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

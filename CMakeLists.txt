@@ -11,13 +11,12 @@ set(CMAKE_INSTALL_LIBDIR llama_cpp/lib CACHE PATH "" FORCE)
 set(CMAKE_INSTALL_INCLUDEDIR llama_cpp/include CACHE PATH "" FORCE)
 
 
-# Helper function to install targets to Python package directories
+# Install a built target into the Python package runtime directory.
 function(llama_cpp_python_install_target target)
     if(NOT TARGET ${target})
         return()
     endif()
 
-    # Define install destinations to avoid code duplication
     set(INSTALL_DIRS
         "${CMAKE_CURRENT_SOURCE_DIR}/llama_cpp/lib"
         "${SKBUILD_PLATLIB_DIR}/llama_cpp/lib"
@@ -46,7 +45,7 @@ function(llama_cpp_python_install_target target)
         endif()
     endforeach()
 
-    # Configure RPATH
+    # Proper RPATH handling
     if(UNIX)
         set(INSTALL_RPATH_VAL "$ORIGIN")
         if(APPLE)
@@ -337,6 +336,7 @@ if (LLAMA_BUILD)
     set(GGML_BACKEND_TARGETS
         ggml-cann
         ggml-cuda
+        ggml-et
         ggml-hexagon
         ggml-hip
         ggml-metal

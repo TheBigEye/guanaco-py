@@ -1,15 +1,14 @@
 """Internal module use at your own risk
 
-This module provides a minimal interface for working with ggml tensors from llama-cpp-python
+This module provides a minimal interface for working with ggml tensors from guanaco-py
 """
 import ctypes
 import enum
 import os
 import pathlib
-
 from llama_cpp._ctypes_extensions import (
+    _version_at_least,
     load_shared_library,
-    byref,
     ctypes_function_for_shared_library,
 )
 
@@ -21,19 +20,59 @@ from typing import (
     TYPE_CHECKING,
 )
 
+def _preload_openmp_runtime():
+    """Preload bundled OpenMP runtime before loading ggml-base.
+
+    This is required on Windows when CPU backends depend on the packaged
+    OpenMP runtime DLL.
+    """
+
+    # Only Windows DLL loading requires this workaround.
+    if os.name != "nt":
+        return
+
+    # Keep compatibility with older package versions.
+    if not _version_at_least("0.3.39"):
+        return
+
+    # Some ComfyUI environments include complex software packages and may also contain
+    # additional OpenMP libraries (such as `libiomp5md.dll`);
+    # the best approach is to delete the conflicting libraries
+    # (i.e., OpenMP dynamic libraries that are not the VC143 version).
+    os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+    libomp_path = (pathlib.Path(__file__).parent / "lib" / "libomp140.x86_64.dll")
+
+    if not libomp_path.exists():
+        print(f"[guanaco-py] WARNING: bundled OpenMP runtime not found: {libomp_path}")
+        return
+
+    try:
+        ctypes.CDLL(str(libomp_path), winmode=ctypes.RTLD_GLOBAL)
+        print(f"[guanaco-py] loaded bundled OpenMP runtime: {libomp_path}")
+    except Exception as e:
+        print(
+            "[guanaco-py] WARNING: failed to load bundled OpenMP runtime:\n"
+            f"  path: {libomp_path}\n"
+            f"  error: {e}"
+        )
+
 libggml_base_path = pathlib.Path(os.path.abspath(os.path.dirname(__file__)))
 libggml_base_paths = [
     libggml_base_path / "lib",
-    libggml_base_path / "bin",
+    # libggml_base_path / "bin",  # The `bin` path is no longer used as a search path for dynamic ggml libraries.
 ]
 
-libggml = load_shared_library("ggml", libggml_base_paths)
-
-ggml_function = ctypes_function_for_shared_library(libggml)
+# Load bundled OpenMP runtime before ggml-base on Windows.
+_preload_openmp_runtime()
 
 libggml_base = load_shared_library("ggml-base", libggml_base_paths)
 
 ggml_base_function = ctypes_function_for_shared_library(libggml_base)
+
+libggml = load_shared_library("ggml", libggml_base_paths)
+
+ggml_function = ctypes_function_for_shared_library(libggml)
 
 # // ====== ggml.h ======
 
@@ -122,6 +161,7 @@ class GGMLStatus(enum.IntEnum):
 #     GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
 #     GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
 #     GGML_TYPE_Q1_0    = 41,
+#     GGML_TYPE_Q2_0    = 42,
 #     GGML_TYPE_COUNT   = 42,
 # };
 class GGMLType(enum.IntEnum):
@@ -159,7 +199,8 @@ class GGMLType(enum.IntEnum):
     GGML_TYPE_MXFP4 = 39
     GGML_TYPE_NVFP4 = 40
     GGML_TYPE_Q1_0 = 41
-    GGML_TYPE_COUNT = 42
+    GGML_TYPE_Q2_0 = 42
+    GGML_TYPE_COUNT = 43
 
 
 # // precision
@@ -201,6 +242,7 @@ class GGMLPrec(enum.IntEnum):
 #     GGML_FTYPE_MOSTLY_MXFP4   = 25, // except 1d tensors
 #     GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
 #     GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
+#     GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
 # };
 class GGMLFType(enum.IntEnum):
     GGML_FTYPE_UNKNOWN        = -1
@@ -230,6 +272,7 @@ class GGMLFType(enum.IntEnum):
     GGML_FTYPE_MOSTLY_MXFP4   = 25
     GGML_FTYPE_MOSTLY_NVFP4   = 26
     GGML_FTYPE_MOSTLY_Q1_0    = 27
+    GGML_FTYPE_MOSTLY_Q2_0    = 28
 
 
 # // available tensor operations:
@@ -292,6 +335,7 @@ class GGMLFType(enum.IntEnum):
 #     GGML_OP_IM2COL,
 #     GGML_OP_IM2COL_BACK,
 #     GGML_OP_IM2COL_3D,
+#     GGML_OP_COL2IM_1D,
 #     GGML_OP_CONV_2D,
 #     GGML_OP_CONV_3D,
 #     GGML_OP_CONV_2D_DW,
@@ -324,6 +368,7 @@ class GGMLFType(enum.IntEnum):
 #     GGML_OP_RWKV_WKV7,
 #     GGML_OP_SOLVE_TRI,
 #     GGML_OP_GATED_DELTA_NET,
+#     GGML_OP_LIGHTNING_INDEXER,
 
 #     GGML_OP_UNARY,
 
@@ -401,55 +446,57 @@ class GGML_OP(enum.IntEnum):
     GGML_OP_IM2COL = 52
     GGML_OP_IM2COL_BACK = 53
     GGML_OP_IM2COL_3D = 54
-    GGML_OP_CONV_2D = 55
-    GGML_OP_CONV_3D = 56
-    GGML_OP_CONV_2D_DW = 57
-    GGML_OP_CONV_TRANSPOSE_2D = 58
-    GGML_OP_POOL_1D = 59
-    GGML_OP_POOL_2D = 60
-    GGML_OP_POOL_2D_BACK = 61
-    GGML_OP_UPSCALE = 62
-    GGML_OP_PAD = 63
-    GGML_OP_PAD_REFLECT_1D = 64
-    GGML_OP_ROLL = 65
-    GGML_OP_ARANGE = 66
-    GGML_OP_TIMESTEP_EMBEDDING = 67
-    GGML_OP_ARGSORT = 68
-    GGML_OP_TOP_K = 69
-    GGML_OP_LEAKY_RELU = 70
-    GGML_OP_TRI = 71
-    GGML_OP_FILL = 72
+    GGML_OP_COL2IM_1D = 55
+    GGML_OP_CONV_2D = 56
+    GGML_OP_CONV_3D = 57
+    GGML_OP_CONV_2D_DW = 58
+    GGML_OP_CONV_TRANSPOSE_2D = 59
+    GGML_OP_POOL_1D = 60
+    GGML_OP_POOL_2D = 61
+    GGML_OP_POOL_2D_BACK = 62
+    GGML_OP_UPSCALE = 63
+    GGML_OP_PAD = 64
+    GGML_OP_PAD_REFLECT_1D = 65
+    GGML_OP_ROLL = 66
+    GGML_OP_ARANGE = 67
+    GGML_OP_TIMESTEP_EMBEDDING = 68
+    GGML_OP_ARGSORT = 69
+    GGML_OP_TOP_K = 70
+    GGML_OP_LEAKY_RELU = 71
+    GGML_OP_TRI = 72
+    GGML_OP_FILL = 73
 
-    GGML_OP_FLASH_ATTN_EXT = 73
-    GGML_OP_FLASH_ATTN_BACK = 74
-    GGML_OP_SSM_CONV = 75
-    GGML_OP_SSM_SCAN = 76
-    GGML_OP_WIN_PART = 77
-    GGML_OP_WIN_UNPART = 78
-    GGML_OP_GET_REL_POS = 79
-    GGML_OP_ADD_REL_POS = 80
-    GGML_OP_RWKV_WKV6 = 81
-    GGML_OP_GATED_LINEAR_ATTN = 82
-    GGML_OP_RWKV_WKV7 = 83
-    GGML_OP_SOLVE_TRI = 84
-    GGML_OP_GATED_DELTA_NET = 85
+    GGML_OP_FLASH_ATTN_EXT = 74
+    GGML_OP_FLASH_ATTN_BACK = 75
+    GGML_OP_SSM_CONV = 76
+    GGML_OP_SSM_SCAN = 77
+    GGML_OP_WIN_PART = 78
+    GGML_OP_WIN_UNPART = 79
+    GGML_OP_GET_REL_POS = 80
+    GGML_OP_ADD_REL_POS = 81
+    GGML_OP_RWKV_WKV6 = 82
+    GGML_OP_GATED_LINEAR_ATTN = 83
+    GGML_OP_RWKV_WKV7 = 84
+    GGML_OP_SOLVE_TRI = 85
+    GGML_OP_GATED_DELTA_NET = 86
+    GGML_OP_LIGHTNING_INDEXER = 87
 
-    GGML_OP_UNARY = 86
+    GGML_OP_UNARY = 88
 
-    GGML_OP_MAP_CUSTOM1 = 87
-    GGML_OP_MAP_CUSTOM2 = 88
-    GGML_OP_MAP_CUSTOM3 = 89
+    GGML_OP_MAP_CUSTOM1 = 89
+    GGML_OP_MAP_CUSTOM2 = 90
+    GGML_OP_MAP_CUSTOM3 = 91
 
-    GGML_OP_CUSTOM = 90
+    GGML_OP_CUSTOM = 92
 
-    GGML_OP_CROSS_ENTROPY_LOSS = 91
-    GGML_OP_CROSS_ENTROPY_LOSS_BACK = 92
-    GGML_OP_OPT_STEP_ADAMW = 93
-    GGML_OP_OPT_STEP_SGD = 94
+    GGML_OP_CROSS_ENTROPY_LOSS = 93
+    GGML_OP_CROSS_ENTROPY_LOSS_BACK = 94
+    GGML_OP_OPT_STEP_ADAMW = 95
+    GGML_OP_OPT_STEP_SGD = 96
 
-    GGML_OP_GLU = 95
+    GGML_OP_GLU = 97
 
-    GGML_OP_COUNT = 96
+    GGML_OP_COUNT = 98
 
 # enum ggml_unary_op {
 #     GGML_UNARY_OP_ABS,

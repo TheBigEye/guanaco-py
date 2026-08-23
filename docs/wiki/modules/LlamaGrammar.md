@@ -10,7 +10,7 @@ version_target: "latest"
 
 ## Overview
 
-`llama_grammar.py` provides grammar utilities for constrained generation in `llama-cpp-python`.
+`llama_grammar.py` provides grammar utilities for constrained generation in `guanaco-py`.
 
 The module defines the `LlamaGrammar` class, a collection of built-in GBNF grammar strings, and a JSON Schema to GBNF converter based on the upstream `llama.cpp` grammar tooling.
 
@@ -457,5 +457,5 @@ print(gbnf)
 
 ## Related Links
 
-* [[Index-Home](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/index.md)]
-* [[Llama Core](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/core/Llama.md)]
+* [[Index-Home](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/index.md)]
+* [[Llama Core](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/core/Llama.md)]

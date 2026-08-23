@@ -28,7 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout repository
@@ -61,12 +61,12 @@ jobs:
           hf download ${{ env.REPO_ID }} ${{ env.MODEL_FILE }}
         shell: bash
 
-      - name: Install dependencies and Build
+      - name: Install dependencies and build CPU backend
         env:
-          CMAKE_ARGS: ${{ matrix.cmake_args }}
-        run: |
-          echo "Building with CMAKE_ARGS: $CMAKE_ARGS"
-          uv pip install --system -e .[all] --verbose
+          CMAKE_ARGS: >-
+            -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF
+            -DGGML_BLAS=OFF -DGGML_NATIVE=OFF
+        run: uv pip install --system -e .[all] --verbose
         shell: bash
 
       - name: System Info and Version

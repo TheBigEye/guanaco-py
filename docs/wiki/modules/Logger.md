@@ -9,7 +9,7 @@ version_target: latest
 
 ## Overview
 
-The `Logger` module provides configuration for runtime logging in `llama-cpp-python`, wrapping the native `ggml`/`llama.cpp` logging infrastructure. It controls verbosity levels, output streams, substring filtering, and callback integration, allowing fine-grained control over diagnostic and informational output from the underlying bindings.
+The `Logger` module provides configuration for runtime logging in `guanaco-py`, wrapping the native `ggml`/`llama.cpp` logging infrastructure. It controls verbosity levels, output streams, substring filtering, and callback integration, allowing fine-grained control over diagnostic and informational output from the underlying bindings.
 
 ## Role in the Library
 
@@ -212,5 +212,5 @@ None documented.
 
 ## Related Links
 
-* [[Index-Home](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/index.md)]
-* [[Llama Core](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/core/Llama.md)]
+* [[Index-Home](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/index.md)]
+* [[Llama Core](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/core/Llama.md)]
