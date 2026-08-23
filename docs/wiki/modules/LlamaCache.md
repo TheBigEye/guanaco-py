@@ -104,7 +104,7 @@ Defined in: `llama_cpp/llama_cache.py`
 
 ## Role in the API
 
-`BaseLlamaCache` acts as the shared contract for cache implementations used by higher-level llama-cpp-python runtime code.
+`BaseLlamaCache` acts as the shared contract for cache implementations used by higher-level guanaco-py runtime code.
 
 It is not intended to be used directly. Users should instantiate one of the concrete cache classes instead:
 
@@ -1514,5 +1514,5 @@ from llama_cpp.llama_cache import HybridCheckpointCache
 
 # Related Links
 
-* [[Index-Home](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/index.md)]
-* [[Llama Core](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/core/Llama.md)]
+* [[Index-Home](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/index.md)]
+* [[Llama Core](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/core/Llama.md)]

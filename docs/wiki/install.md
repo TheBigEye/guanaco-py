@@ -14,10 +14,10 @@ version_target: "latest"
 
 ## Overview
 
-This page explains how to install `llama-cpp-python` from source, with or
+This page explains how to install `guanaco-py` from source, with or
 without hardware acceleration.
 
-`llama-cpp-python` builds the native `llama.cpp` libraries during installation
+`guanaco-py` builds the native `llama.cpp` libraries during installation
 and installs them inside the Python package. The exact build depends on your
 Python version, compiler, CMake version, operating system, and selected
 `llama.cpp` backend.
@@ -87,13 +87,13 @@ Then activate the environment again.
 Install directly from the project repository:
 
 ```bash
-python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 On Windows PowerShell:
 
 ```powershell
-python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 This builds `llama.cpp` from source and installs the generated native runtime
@@ -102,7 +102,7 @@ libraries alongside the Python package.
 Use verbose output when diagnosing build failures:
 
 ```bash
-python -m pip install --verbose "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+python -m pip install --verbose "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 ---
@@ -112,8 +112,8 @@ python -m pip install --verbose "llama-cpp-python @ git+https://github.com/JameP
 Clone recursively so the `vendor/llama.cpp` submodule is available:
 
 ```bash
-git clone https://github.com/JamePeng/llama-cpp-python --recursive
-cd llama-cpp-python
+git clone https://github.com/TheBigEye/guanaco-py --recursive
+cd guanaco-py
 python -m pip install --upgrade pip
 python -m pip install .
 ```
@@ -143,14 +143,14 @@ Linux and macOS:
 
 ```bash
 CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 Windows PowerShell:
 
 ```powershell
 $env:CMAKE_ARGS = "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS"
-python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 Clear the variable after the build if you do not want it reused:
@@ -164,7 +164,7 @@ Remove-Item Env:CMAKE_ARGS
 You can also pass CMake arguments through `pip`:
 
 ```bash
-python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git" \
+python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git" \
   -C cmake.args="-DGGML_BLAS=ON;-DGGML_BLAS_VENDOR=OpenBLAS"
 ```
 
@@ -193,7 +193,7 @@ Example portable CUDA build:
 ```bash
 CMAKE_ARGS="-DGGML_CUDA=ON -DGGML_NATIVE=OFF" \
   python -m pip install --force-reinstall --no-cache-dir \
-  "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 Example dynamic CPU backend build:
@@ -201,7 +201,7 @@ Example dynamic CPU backend build:
 ```bash
 CMAKE_ARGS="-DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_NATIVE=OFF" \
   python -m pip install --force-reinstall --no-cache-dir \
-  "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 ---
@@ -241,14 +241,14 @@ Linux:
 
 ```bash
 CMAKE_ARGS="-DGGML_CUDA=on" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 Windows PowerShell:
 
 ```powershell
 $env:CMAKE_ARGS = "-DGGML_CUDA=on"
-python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 For newer NVIDIA GPUs with compute capability 90 or higher, the README notes
@@ -262,7 +262,7 @@ Example:
 
 ```bash
 CMAKE_ARGS="-DGGML_CUDA=on -DGGML_CUDA_PDL=ON" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 If `nvcc` produces large volumes of non-blocking template warnings, the README
@@ -279,7 +279,7 @@ a wheel intended to run across multiple CUDA GPUs, disable native detection:
 
 ```bash
 CMAKE_ARGS="-DGGML_CUDA=ON -DGGML_NATIVE=OFF" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 If `nvcc` cannot detect your GPU, or if you want to control the generated
@@ -287,7 +287,7 @@ binary size, specify CUDA architectures explicitly:
 
 ```bash
 CMAKE_ARGS="-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86;89" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 Use NVIDIA's compute capability table to choose architecture numbers. For
@@ -297,7 +297,7 @@ If multiple CUDA toolkits are installed, point CMake at the intended compiler:
 
 ```bash
 CMAKE_ARGS="-DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER=/opt/cuda-12.8/bin/nvcc" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 Runtime variables that may matter after installation:
@@ -324,7 +324,7 @@ Use OpenBLAS when the OpenBLAS development package is available on your system.
 
 ```bash
 CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 On Linux, install the OpenBLAS development package with your system package
@@ -336,7 +336,7 @@ BLIS is selected through the `FLAME` BLAS vendor after BLIS is installed:
 
 ```bash
 CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=FLAME" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 The upstream BLIS guide also notes that runtime variables such as
@@ -350,7 +350,7 @@ which is usually handled through SYCL or OpenVINO.
 ```bash
 source /opt/intel/oneapi/setvars.sh
 CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Intel10_64lp -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_NATIVE=ON" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 ---
@@ -361,14 +361,14 @@ On macOS, Metal is enabled by default by this project when building on Apple
 platforms. A normal install is usually enough:
 
 ```bash
-python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 To disable Metal at build time:
 
 ```bash
 CMAKE_ARGS="-DGGML_METAL=OFF" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 At runtime, use `n_gpu_layers=0` when you want CPU inference even though the
@@ -383,7 +383,7 @@ setup required by the SDK.
 
 ```bash
 CMAKE_ARGS="-DGGML_VULKAN=on" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 On Linux and macOS, make sure the Vulkan SDK setup script has been sourced in
@@ -401,7 +401,7 @@ The upstream guide builds Vulkan with Metal disabled:
 
 ```bash
 CMAKE_ARGS="-DGGML_VULKAN=ON -DGGML_METAL=OFF" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 ---
@@ -415,7 +415,7 @@ Linux:
 ```bash
 source /opt/intel/openvino/setupvars.sh
 CMAKE_ARGS="-DGGML_OPENVINO=ON" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 Windows:
@@ -424,7 +424,7 @@ Windows:
 # Run this from a shell where OpenVINO setupvars.bat has been initialized,
 # such as an OpenVINO command prompt, or initialize it through cmd first.
 $env:CMAKE_ARGS = "-DGGML_OPENVINO=ON"
-python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 The OpenVINO backend is intended for Intel CPU, GPU, and NPU workflows when the
@@ -457,7 +457,7 @@ Linux example:
 
 ```bash
 CMAKE_ARGS="-DGGML_HIP=ON -DGPU_TARGETS=gfx1030" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 `GPU_TARGETS` is optional in some setups, but specifying your GPU architecture
@@ -473,7 +473,7 @@ acceleration through rocWMMA:
 
 ```bash
 CMAKE_ARGS="-DGGML_HIP=ON -DGPU_TARGETS=gfx1100 -DGGML_HIP_ROCWMMA_FATTN=ON" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 Runtime variables that may matter:
@@ -493,14 +493,14 @@ SYCL builds are usually used with Intel oneAPI compilers.
 ```bash
 source /opt/intel/oneapi/setvars.sh
 CMAKE_ARGS="-DGGML_SYCL=on -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 To request FP16 support:
 
 ```bash
 CMAKE_ARGS="-DGGML_SYCL=on -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_SYCL_F16=ON" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 Useful SYCL build options from the upstream backend docs:
@@ -535,7 +535,7 @@ SYCL is usually preferred for modern Intel GPU workflows.
 
 ```bash
 CMAKE_ARGS="-DGGML_OPENCL=ON" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 Useful OpenCL CMake options:
@@ -557,7 +557,7 @@ before building.
 
 ```bash
 CMAKE_ARGS="-DGGML_CANN=ON -DCMAKE_BUILD_TYPE=Release" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 The upstream CANN documentation focuses on Linux and Ascend devices such as
@@ -579,21 +579,21 @@ ZenDNN can be downloaded and built automatically by CMake:
 
 ```bash
 CMAKE_ARGS="-DGGML_ZENDNN=ON -DCMAKE_BUILD_TYPE=Release" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 If you already have a ZenDNN installation:
 
 ```bash
 CMAKE_ARGS="-DGGML_ZENDNN=ON -DZENDNN_ROOT=/path/to/ZenDNN/build/install" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 zDNN requires a zDNN library installation first:
 
 ```bash
 CMAKE_ARGS="-DGGML_ZDNN=ON -DZDNN_ROOT=/opt/zdnn-libs" \
-  python -m pip install "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  python -m pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 ZenDNN currently accelerates matrix multiplication paths and may fall back to
@@ -649,7 +649,7 @@ force a rebuild with new CMake options:
 ```bash
 CMAKE_ARGS="-DGGML_CUDA=on" \
   python -m pip install --upgrade --force-reinstall --no-cache-dir \
-  "llama-cpp-python @ git+https://github.com/JamePeng/llama-cpp-python.git"
+  "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
 This is important because `pip` may otherwise reuse cached wheels or build
@@ -722,8 +722,8 @@ llm = Llama(
 Common local development commands:
 
 ```bash
-git clone https://github.com/JamePeng/llama-cpp-python --recursive
-cd llama-cpp-python
+git clone https://github.com/TheBigEye/guanaco-py --recursive
+cd guanaco-py
 python -m pip install --upgrade pip
 python -m pip install -e .
 python -m pytest
@@ -768,8 +768,8 @@ For detailed diagnostics, see [[Troubleshooting]].
 
 ## Related Links
 
-* [[Index-Home](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/index.md)]
-* [[Llama Core](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/core/Llama.md)]
-* [README Installation](https://github.com/JamePeng/llama-cpp-python/blob/main/README.md#installation)
+* [[Index-Home](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/index.md)]
+* [[Llama Core](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/core/Llama.md)]
+* [README Installation](https://github.com/TheBigEye/guanaco-py/blob/main/README.md#installation)
 * [llama.cpp build documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md)
 * [llama.cpp backend documentation](https://github.com/ggml-org/llama.cpp/tree/master/docs/backend)

@@ -5,10 +5,12 @@ import os
 import ctypes
 import functools
 import pathlib
+import importlib.metadata
 from ctypes.util import find_library
 from typing import (
     Any,
     Callable,
+    Iterable,
     List,
     Union,
     Optional,
@@ -17,6 +19,15 @@ from typing import (
     Generic,
 )
 from typing_extensions import TypeAlias
+
+def _version_at_least(version: str) -> bool:
+    """Check whether installed guanaco-py version meets requirement."""
+    try:
+        current = importlib.metadata.version("guanaco-py")
+        from packaging.version import Version
+        return Version(current) >= Version(version)
+    except Exception:
+        return False
 
 def _format_library_dir_contents(base_paths: list[pathlib.Path]) -> str:
     """Format directory contents for diagnostics after library loading fails."""
@@ -90,17 +101,8 @@ def load_shared_library(lib_base_name: str, base_paths: Union[pathlib.Path, list
 
     # Add the library directory to the DLL search path on Windows (if needed)
     if sys.platform == "win32":
-        for base_path in base_paths:
-            p = pathlib.Path(base_path)
-            if p.exists() and p.is_dir():
-                os.add_dll_directory(str(p))
-                os.environ["PATH"] = str(p) + os.pathsep + os.environ["PATH"]
 
-    if sys.platform == "win32" and sys.version_info >= (3, 9):
-        for base_path in base_paths:
-            p = pathlib.Path(base_path)
-            if p.exists() and p.is_dir():
-                os.add_dll_directory(str(p))
+        # Add CUDA runtime DLL directories if CUDA is available.
         if "CUDA_PATH" in os.environ:
             cuda_path = os.environ["CUDA_PATH"]
             sub_dirs_to_add = [
@@ -114,13 +116,41 @@ def load_shared_library(lib_base_name: str, base_paths: Union[pathlib.Path, list
                 if os.path.exists(full_path):
                     os.add_dll_directory(full_path)
 
+        # Add HIP runtime DLL directories when HIP backend is available.
         if "HIP_PATH" in os.environ:
-            os.add_dll_directory(os.path.join(os.environ["HIP_PATH"], "bin"))
-            os.add_dll_directory(os.path.join(os.environ["HIP_PATH"], "lib"))
+            hip_path = os.environ["HIP_PATH"]
+            for sub_dir in ["bin", "lib"]:
+                full_path = os.path.join(hip_path, sub_dir)
+                if os.path.exists(full_path):
+                    os.add_dll_directory(full_path)
 
+        # Add Vulkan SDK DLL directories when Vulkan backend is enabled.
         if "VULKAN_SDK" in os.environ:
-            os.add_dll_directory(os.path.join(os.environ["VULKAN_SDK"], "Bin"))
-            os.add_dll_directory(os.path.join(os.environ["VULKAN_SDK"], "Lib"))
+            vulkan_sdk = os.environ["VULKAN_SDK"]
+            for sub_dir in ["Bin", "Lib"]:
+                full_path = os.path.join(vulkan_sdk, sub_dir)
+                if os.path.exists(full_path):
+                    os.add_dll_directory(full_path)
+
+        # Add package-provided library directories.
+        #
+        # The paths are added in reverse order intentionally.
+        # This ensures that the first entry in base_paths gets prepended
+        # to PATH last, making it the highest priority search location.
+        #
+        # Example:
+        #   base_paths = [
+        #       package/lib,
+        #       package/bin,
+        #   ]
+        #
+        # After reversed iteration:
+        #   PATH = package/lib;package/bin;...
+        for base_path in reversed(base_paths):
+            p = pathlib.Path(base_path)
+            if p.exists() and p.is_dir():
+                os.add_dll_directory(str(p))
+                os.environ["PATH"] = str(p) + os.pathsep + os.environ["PATH"]
 
         cdll_args["winmode"] = ctypes.RTLD_GLOBAL
 
@@ -130,7 +160,9 @@ def load_shared_library(lib_base_name: str, base_paths: Union[pathlib.Path, list
     lib_path = find_library(lib_base_name)
     if lib_path:
         try:
-            return ctypes.CDLL(lib_path, **cdll_args)
+            lib = ctypes.CDLL(lib_path, **cdll_args)
+            print(f"[guanaco-py].find_library: loaded library from {lib_path}")
+            return lib
         except Exception as e:
             errors.append(f"{lib_path}: {e}")
 
@@ -141,7 +173,9 @@ def load_shared_library(lib_base_name: str, base_paths: Union[pathlib.Path, list
 
             if lib_path.exists():
                 try:
-                    return ctypes.CDLL(str(lib_path), **cdll_args)
+                    lib = ctypes.CDLL(str(lib_path), **cdll_args)
+                    print(f"[guanaco-py].provided_path: loaded library from {lib_path}")
+                    return lib
                 except Exception as e:
                     errors.append(f"{lib_path}: {e}")
 
@@ -184,20 +218,100 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 def ctypes_function_for_shared_library(lib: ctypes.CDLL):
-    """Decorator for defining ctypes functions with type hints"""
+    """Create a decorator used to bind typed Python declarations to C symbols.
+
+    The returned decorator accepts either a single exported symbol name or an
+    iterable of ABI-compatible aliases. When aliases are provided, they are
+    checked in order and the first available symbol is selected.
+    """
 
     def ctypes_function(
-        name: str, argtypes: List[Any], restype: Any, enabled: bool = True
+        name: Union[str, Iterable[str]],
+        argtypes: List[Any],
+        restype: Any,
+        enabled: bool = True,
+        required: bool = True,
     ):
+        """Bind a Python declaration to one of the requested C symbols.
+
+        Args:
+            name: A symbol name or an ordered iterable of compatible aliases.
+            argtypes: The ctypes argument types assigned to the C function.
+            restype: The ctypes return type assigned to the C function.
+            enabled: Return the original Python declaration when disabled.
+            required: Raise if symbol is missing. If False, create a runtime unavailable stub.
+
+        Raises:
+            ValueError: If no symbol names are provided.
+            AttributeError: If none of the requested symbols exist in the
+                shared library.
+        """
+        symbol_names = (name,) if isinstance(name, str) else tuple(name)
+
+        if not symbol_names:
+            raise ValueError("At least one shared library symbol name is required")
+
         def decorator(f: F) -> F:
-            if enabled:
-                func = getattr(lib, name)
+            if not enabled:
+                return f
+
+            for symbol_name in symbol_names:
+                try:
+                    func = getattr(lib, symbol_name)
+                except AttributeError:
+                    continue
+                # Validate ctypes argument declarations before assigning them.
+                # ctypes requires every argtype to provide from_param().
+                for index, argtype in enumerate(argtypes):
+                    if not hasattr(argtype, "from_param"):
+                        raise TypeError(
+                            "Invalid ctypes argument type:\n"
+                            f"  function: {f.__name__}\n"
+                            f"  symbol: {symbol_name}\n"
+                            f"  arg index: {index}\n"
+                            f"  arg type: {argtype!r}\n"
+                            f"  expected: a ctypes type with from_param()"
+                        )
+
                 func.argtypes = argtypes
                 func.restype = restype
-                functools.wraps(f)(func)
+                functools.update_wrapper(func, f)
+
+                # Preserve the actual exported symbol selected at runtime for
+                # diagnostics, especially when ABI aliases are being used.
+                func.__ctypes_symbol_name__ = symbol_name
                 return func
-            else:
-                return f
+
+            message = (
+                "None of the shared library symbols were found: "
+                + ", ".join(symbol_names)
+            )
+
+            if required:
+                raise AttributeError(message)
+
+            # Optional extension API.
+            # Keep import working when the symbol is unavailable.
+            print(
+                "[guanaco-py].ctypes_function: WARNING! optional API unavailable\n"
+                f"  symbols: {', '.join(symbol_names)}\n"
+                f"  library: {getattr(lib, '_name', '<unknown>')}"
+            )
+
+            def unavailable(*args, **kwargs):
+                raise RuntimeError(
+                    "This llama.cpp extension API is unavailable.\n"
+                    f"Required symbol(s): {', '.join(symbol_names)}\n"
+                    f"Library: {getattr(lib, '_name', '<unknown>')}"
+                )
+
+            functools.update_wrapper(unavailable, f)
+
+            # Mark unavailable extension API.
+            unavailable.__ctypes_symbol_name__ = None
+            unavailable.__ctypes_optional__ = True
+
+            return unavailable
 
         return decorator
 

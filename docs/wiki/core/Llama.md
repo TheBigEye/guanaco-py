@@ -1,22 +1,34 @@
-```yaml
 ---
 title: Llama Class
 module_name: llama_cpp.llama
 source_file: llama_cpp/llama.py
 class_name: Llama
-last_updated: 2026-05-16
+last_updated: 2026-08-20
 version_target: "latest"
 ---
-```
 
 ## Overview
+
 The `Llama` class is the core, high-level Python wrapper for a `llama.cpp` model. It handles model loading, memory management (KV cache), tokenization, and generation (both base text completion and chat formatting). It includes advanced features like dynamic LoRA routing, dual-mode hybrid/recurrent checkpointing, speculative decoding, and context shifting.
+
+## Role in the Library
+
+`Llama` is the main user-facing entry point for loading a GGUF model and
+creating a native `llama.cpp` context. It exposes completion, chat, tokenization,
+embedding, state, sampling, and runtime configuration APIs through one managed
+object.
+
+Use `Llama` when one application needs a general-purpose model interface.
+For embedding-only applications, `LlamaEmbedding` provides embedding-oriented
+defaults and additional reranking helpers while inheriting the same model and
+context lifecycle.
 
 ## Constructor (`__init__`)
 
 Initialize the model and context. Note that model loading will immediately allocate RAM/VRAM based on the selected offloading parameters.
 
 ### Core Model & Hardware Parameters
+
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `model_path` | `str` | **Required** | Model file path (GGUF format) |
@@ -24,33 +36,86 @@ Initialize the model and context. Note that model loading will immediately alloc
 | `cpu_moe` | `bool` | `False` | Whether to keep all MoE weights on CPU |
 | `n_cpu_moe` | `int` | `0` | Number of first N MoE layers to keep on CPU (compatible with `cpu_moe`) |
 | `split_mode` | `int` | `LLAMA_SPLIT_MODE_LAYER` | Model GPU split mode:<br>• `LLAMA_SPLIT_MODE_NONE`: single GPU<br>• `LLAMA_SPLIT_MODE_ROW`: row-level split<br>• `LLAMA_SPLIT_MODE_LAYER`: layer-level split |
+| `load_mode` | `int` (`llama_load_mode`) | `LLAMA_LOAD_MODE_MMAP` | How model data is loaded. Select one of the `LLAMA_LOAD_MODE_*` values described below. |
 | `main_gpu` | `int` | `0` | The primary GPU to use for intermediate results or the entire model. |
 | `tensor_split` | `List[float]` | `None` | Proportional split of tensors across GPUs (max `LLAMA_MAX_DEVICES`). |
-| `use_mmap` | `bool` | `True` | Whether to use memory mapping (mmap) if possible. |
-| `use_mlock` | `bool` | `False` | Force the system to keep the model in RAM, preventing swapping. |
 | `kv_overrides` | `Dict` | `None` | Key-value overrides for the model metadata (supports bool, int, float, str). |
-| `numa` | `Union[bool, int]`| `False` | NUMA strategy (e.g., `GGML_NUMA_STRATEGY_DISTRIBUTE`). |
+| `load_mtp` | `bool` | `False` | Load the target model's NextN/MTP tensors. This is enabled automatically for built-in MTP through `speculative`; normally it should not be set manually. |
+| `numa` | `Union[bool, int]` | `False` | NUMA strategy (e.g., `GGML_NUMA_STRATEGY_DISTRIBUTE`). |
 
-### Context & Performance Parameters
+#### Model Load Modes
+
+`load_mode` replaces the legacy `use_mmap`, `use_direct_io`, and `use_mlock`
+arguments. It accepts a member of `llama_cpp.llama_load_mode`:
+
+| Value | Integer | Description |
+| :--- | :---: | :--- |
+| `LLAMA_LOAD_MODE_NONE` | `0` | Use no special model-loading mode. |
+| `LLAMA_LOAD_MODE_MMAP` | `1` | Memory-map the model. This is the default. |
+| `LLAMA_LOAD_MODE_MLOCK` | `2` | Keep the loaded model in RAM rather than allowing it to be swapped or compressed. |
+| `LLAMA_LOAD_MODE_MMAP_MLOCK` | `3` | Memory-map the model and keep its mapped pages in RAM. |
+| `LLAMA_LOAD_MODE_DIRECT_IO` | `4` | Use direct I/O when it is available. |
+
+```python
+import llama_cpp
+
+llm = llama_cpp.Llama(
+    model_path="models/model.gguf",
+    load_mode=llama_cpp.llama_load_mode.LLAMA_LOAD_MODE_MMAP_MLOCK,
+)
+```
+
+The legacy loading arguments are retained only for call compatibility. They no
+longer configure the underlying model parameters and may emit a deprecation
+warning; set `load_mode` explicitly instead. Use the following migration
+mapping:
+
+| Legacy configuration | Replacement |
+| :--- | :--- |
+| `use_mmap=False, use_mlock=False` | `load_mode=LLAMA_LOAD_MODE_NONE` |
+| `use_mmap=True, use_mlock=False` | `load_mode=LLAMA_LOAD_MODE_MMAP` |
+| `use_mmap=False, use_mlock=True` | `load_mode=LLAMA_LOAD_MODE_MLOCK` |
+| `use_mmap=True, use_mlock=True` | `load_mode=LLAMA_LOAD_MODE_MMAP_MLOCK` |
+| `use_direct_io=True` | `load_mode=LLAMA_LOAD_MODE_DIRECT_IO` |
+
+### Context & Batch Parameters
+
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `n_ctx` | `int` | `512` | Text context size. Set to `0` to load from model metadata. |
-| `n_batch` | `int` | `2048` | Maximum batch size for prompt processing. |
-| `n_ubatch` | `int` | `512` | Physical batch size. |
+| `n_keep` | `int` | `256` | Preferred number of leading tokens to preserve during automatic context shifting. |
+| `n_batch` | `int` | `2048` | Maximum number of tokens in a logical prompt-processing batch. The effective value cannot exceed `n_ctx`. |
+| `n_ubatch` | `int` | `512` | Maximum number of tokens in a physical micro-batch processed by llama.cpp. |
+| `n_seq_max` | `int` | `1` | Maximum independent sequence states in one decode batch. Embedding calls split automatically at this limit; larger values enable more parallel sequences. |
+| `n_rs_seq` | `int` | `0` | Experimental recurrent-state snapshots retained per sequence for rollback. `0` disables rollback snapshots. |
+| `n_outputs_max` | `int` | `0` | Maximum outputs in a physical batch. `0` lets llama.cpp use the effective `n_batch`. |
+| `n_outputs_max_per_seq` | `int` | `1` | Maximum outputs per sequence. `0` lets llama.cpp use the effective `n_outputs_max`. |
 | `n_threads` | `int` | `None` | Number of threads for generation (defaults to CPU count // 2). |
-| `n_threads_batch`| `int` | `None` | Number of threads for batch processing (defaults to CPU count). |
-| `flash_attn_type`| `int` | `AUTO` | Controls Flash Attention activation (`LLAMA_FLASH_ATTN_TYPE_AUTO`). |
-| `swa_full` | `bool` | `None` | Whether to use full-size SWA cache |
-| `kv_unified` | `bool` | `None` | Use single unified KV buffer for the KV cache of all sequences |
-| `type_k` / `type_v`| `int` | `None` | KV cache data type for K and V (defaults to `f16`). |
-| `offload_kqv` | `bool` | `True` | Whether to offload K, Q, V tensors to GPU. |
+| `n_threads_batch` | `int` | `None` | Number of threads for batch processing (defaults to CPU count). |
+| `ctx_type` | `int` | `LLAMA_CONTEXT_TYPE_DEFAULT` | Context implementation selected by llama.cpp. Keep the default unless a model or backend requires another context type. |
+
+### Embedding, Attention & KV Parameters
+
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `embeddings` | `bool` | `False` | Enable embedding extraction alongside logits. Must be `True` before calling `embed()` or `create_embedding()`. |
+| `pooling_type` | `int` | `LLAMA_POOLING_TYPE_UNSPECIFIED` | Pooling strategy for embedding output. `UNSPECIFIED` follows model metadata, `NONE` returns token-level vectors, and `RANK` returns classifier or reranking output. |
+| `attention_type` | `int` | `LLAMA_ATTENTION_TYPE_UNSPECIFIED` | Attention mode used by the context. `UNSPECIFIED` lets llama.cpp select the model-compatible behavior. |
+| `logits_all` | `bool` | `False` | Retain logits for every evaluated token instead of only requested outputs. Completion log probabilities require this mode. |
+| `flash_attn_type` | `int` | `LLAMA_FLASH_ATTN_TYPE_AUTO` | Controls when Flash Attention is enabled. |
+| `offload_kqv` | `bool` | `True` | Offload K, Q, and V tensor operations to the selected device when supported. |
+| `swa_full` | `Optional[bool]` | `None` | Use a full-size sliding-window-attention cache. `None` keeps llama.cpp's default. |
+| `kv_unified` | `Optional[bool]` | `None` | Use a unified KV buffer for all sequences. `LlamaEmbedding` enables this automatically. |
+| `type_k` / `type_v` | `Optional[int]` | `None` | KV cache data types for keys and values. `None` uses llama.cpp defaults. |
 
 ### Advanced & Chat Parameters
+
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `chat_format` | `str` | `None` | String specifying the chat template (e.g., `"llama-2"`, `"chatml"`). Guessed from GGUF if None. |
 | `chat_handler` | `LlamaChatCompletionHandler` | `None` | Optional custom handler. See [[ChatHandlers]]. |
-| `draft_model` | `LlamaDraftModel` | `None` | Optional draft model for speculative decoding. |
+| `draft_model` | `LlamaDraftModel` | `None` | Deprecated stateless draft callback kept for compatibility. New code should use `speculative`. |
+| `speculative` | `Union[SpecConfig, LlamaSpecEngine]` | `None` | Stateful speculative configuration or engine. Supports the complete begin/draft/process/accept lifecycle; it cannot be combined with `draft_model`. |
 | `ctx_checkpoints` | `int` | `16` | Max hybrid/recurrent context checkpoints to keep. Set to `0` to disable checkpointing for single-turn fast paths. |
 | `checkpoint_interval` | `int` | `4096` | Token interval for saving periodic Hybrid/Recurrent checkpoints during long prompt evaluation. |
 | `checkpoint_on_device` | `bool` | `False` | Store Hybrid/Recurrent checkpoint tensor payloads in `llama_context`-owned device buffers via `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE`. Reduces device-to-host copy overhead, but only one active checkpoint per `seq_id` is safe. |
@@ -71,7 +136,9 @@ Initialize the model and context. Note that model loading will immediately alloc
 ## Core Methods
 
 ### `create_chat_completion`
+
 Generates a chat response using the configured `chat_format` or `chat_handler`.
+
 ```python
 import llama_cpp
 
@@ -89,7 +156,9 @@ print(response["choices"][0]["message"]["content"])
 ```
 
 ### `create_completion` / `__call__`
+
 Generates standard text completion from a raw string prompt.
+
 ```python
 import llama_cpp
 
@@ -99,7 +168,9 @@ print(output["choices"][0]["text"])
 ```
 
 ### `generate`
+
 A low-level generator yielding token IDs one by one. Highly customizable with sampling parameters, dynamic LoRA mounting, and control vectors.
+
 ```python
 import llama_cpp
 
@@ -111,14 +182,18 @@ for token in model.generate(tokens, top_k=40, top_p=0.95, temp=0.2):
 ```
 
 ### `eval`
+
 Low-level method to ingest and evaluate a sequence of tokens. Used internally to update the KV cache and logits. Handles **Context Shifting** automatically to prevent OOM when the token count exceeds `n_ctx`.
+
 ```python
 # Evaluates a chunk of tokens and updates internal state
 model.eval(tokens=[1, 453, 234, 987], active_loras=[{"name": "coding_adapter", "scale": 1.0}])
 ```
 
 ### `abort`
+
 Immediately halts an active generation loop safely.
+
 * **Usage**: Typically called from a separate monitoring thread (like a timer). When triggered, the running stream will exit and the final chunk will contain `"finish_reason": "abort"`.
 
 ### Runtime Logging Control
@@ -158,7 +233,9 @@ llm.set_verbosity(1)
 ```
 
 ### Dynamic LoRA Management
+
 The `Llama` class allows you to load multiple LoRAs into VRAM and apply them dynamically per-generation or per-eval.
+
 * `load_lora(name: str, path: str)`: Loads an adapter into VRAM (does not apply it yet).
 * `unload_lora(name: str)`: Releases the specific LoRA from VRAM.
 * `list_loras() -> List[str]`: Returns names of all registered LoRAs.
@@ -189,26 +266,64 @@ The `Llama` class allows you to load multiple LoRAs into VRAM and apply them dyn
 
 3. **Speculative Decoding**:
 
-    Accelerates generation by using a small "draft" model to predict tokens, which the larger model then validates in parallel.
-    The fastest way to use speculative decoding is through the `LlamaNGramMapDecoding`(**Recommend**) or `LlamaPromptLookupDecoding` class.
+    New code should pass `SpecConfig` through the `speculative` argument. This enables the stateful begin/draft/process/accept lifecycle, including verification batches, acceptance feedback, recurrent-state rollback, and per-run statistics.
+
+    The current implementation is text-only and uses sequence ID `0`. It supports built-in and external MTP plus the `NGRAM_MAP_K` and `NGRAM_MAP_K4V` lookup engines. Multimodal pseudo-tokens, which may use negative token IDs, are not yet supported by this path.
+
+    **Built-in MTP heads**
+
     ```python
     from llama_cpp import Llama
-    from llama_cpp.llama_speculative import LlamaNGramMapDecoding
+    from llama_cpp.llama_speculative import SpecConfig, SpeculativeType
 
-    llama = Llama(
-        model_path="path/to/qwen-3.6-27b.gguf",
+    llm = Llama(
+        model_path="path/to/model-with-mtp.gguf",
         n_ctx=4096,
+        n_batch=512,
         n_gpu_layers=-1,
-        draft_model=LlamaNGramMapDecoding(
-            ngram_size=3,
-            num_pred_tokens=10
-        )
+        speculative=SpecConfig(
+            spec_type=SpeculativeType.DRAFT_MTP,
+            draft_n_max=2,
+            draft_p_min=0.0,
+        ),
     )
-
-    for chunk in main_llm.create_completion("Explain quantum physics", stream=True):
-        print(chunk["choices"][0]["text"], end="")
     ```
-    Note: `LlamaPromptLookupDecoding.num_pred_tokens` is the number of tokens to predict 10 is the default and generally good for gpu, 2 performs better for cpu-only machines. Now, `LlamaNGramMapDecoding` with the new Hash Map algorithm, draft generation becomes instantaneous $O(1)$, and the time consumption is almost 0 regardless of whether you set the prediction to 2 or 10 words.
+
+    Omitting `draft_model_path` makes `Llama` enable target MTP tensor loading automatically. MTP has currently been tested with built-in and external MTP models from the Qwen3.5, Qwen3.6, and Qwen3.8 families. For Qwen3.8 27B, `draft_n_max=2` is a good starting point, but the best value depends on the backend, GPU, quantization, prompt, and sampling settings. Use `examples.benchmark.benchmark_speculative` to tune it in the deployment environment.
+
+    **External MTP model**
+
+    ```python
+    llm = Llama(
+        model_path="path/to/target.gguf",
+        n_batch=512,
+        n_gpu_layers=-1,
+        speculative=SpecConfig(
+            spec_type=SpeculativeType.DRAFT_MTP,
+            draft_model_path="path/to/mtp.gguf",
+            draft_n_max=2,
+            draft_n_gpu_layers="all",
+        ),
+    )
+    ```
+
+    **N-gram lookup**
+
+    ```python
+    llm = Llama(
+        model_path="path/to/model.gguf",
+        n_batch=512,
+        speculative=SpecConfig(
+            spec_type=SpeculativeType.NGRAM_MAP_K,
+            ngram_size_n=8,
+            ngram_size_m=16,
+        ),
+    )
+    ```
+
+    MTP and n-gram draft lengths are independent: draft-family engines use `draft_n_max`, while K/K4V use `ngram_size_m`. The implementation keeps the complete `[last_verified_token, draft...]` verification batch together and limits the effective draft length to `n_batch - 1`.
+
+    After a generation, `llm.last_speculative_stats` exposes acceptance, phase timing, checkpoint, rollback, TTFT, and sustained-generation measurements. See [[Llama Speculative Decoding](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/modules/LlamaSpeculative.md)] for configuration details, supported engines, benchmark commands, and the exact meaning of each statistic.
 
 4. **Dynamic LoRA Routing**:
 
@@ -244,7 +359,9 @@ The `Llama` class allows you to load multiple LoRAs into VRAM and apply them dyn
    - **Host checkpoint mode** (`checkpoint_on_device=False`, default): checkpoint payloads are serialized into Python-owned bytes. This supports multiple historical checkpoints per `seq_id`, which is useful for multi-turn reuse and deeper rollback history.
    - **Device checkpoint mode** (`checkpoint_on_device=True`): checkpoint tensor payloads are stored in `llama_context`-owned device buffers via `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE`. Python only keeps the host-visible serialized portion. This reduces device-to-host tensor copy overhead, but only one active checkpoint per `seq_id` is safe because device payloads are keyed by `seq_id`.
 
-   *Tips*: If you are using a hybrid multimodal model for ComfyUI nodes or single-turn API wrappers where you do not need multi-turn state rollback, initialize your `Llama` instance with `ctx_checkpoints=0`:
+   These prompt-cache checkpoints are distinct from the native recurrent snapshots used by MTP speculative decoding. MTP reserves recurrent snapshot slots from `draft_n_max`. N-gram engines do not own a native draft context, so rejection on a Hybrid/Recurrent target depends on `HybridCheckpointCache`; keep `ctx_checkpoints` greater than zero for that combination, preferably with on-device storage.
+
+   *Tips*: If you are using a hybrid multimodal model for ComfyUI nodes or single-turn API wrappers without stateful speculative decoding or multi-turn rollback, initialize your `Llama` instance with `ctx_checkpoints=0`:
 
    ```python
    llm = Llama(
@@ -268,11 +385,11 @@ The `Llama` class allows you to load multiple LoRAs into VRAM and apply them dyn
     )
     ```
 
-    Use `checkpoint_on_device=False` if you need multiple historical checkpoints for the same `seq_id`. Use `checkpoint_on_device=True` when fast rollback/checkpointing is more important than keeping many historical checkpoint payloads.
+    Use `checkpoint_on_device=False` if you need multiple historical checkpoints for the same `seq_id`. Use `checkpoint_on_device=True` when fast rollback/checkpointing is more important than keeping many historical checkpoint payloads. Do not disable checkpoints when combining n-gram speculation with a Hybrid/Recurrent target.
 
 6.  **Assistant Prefill**:
 
-    `llama-cpp-python` supports native **Assistant Prefill** for seamless message continuation. You can now simply use the `assistant_prefill=True` parameter in the `create_chat_completion` function.
+    `guanaco-py` supports native **Assistant Prefill** for seamless message continuation. You can now simply use the `assistant_prefill=True` parameter in the `create_chat_completion` function.
 
     This safely renders the `N-1` conversation history using standard Jinja templates (preserving exact control tokens) and flawlessly appends your partial text directly to the prompt.
 
@@ -430,22 +547,130 @@ The `Llama` class allows you to load multiple LoRAs into VRAM and apply them dyn
 
 ---
 
-## Deprecated / Changed APIs
+## Embeddings
 
-> ⚠️ **Warning:** The internal embedding methods on the `Llama` class are deprecated and will be removed.
+The `Llama` embedding methods are maintained and use streaming batches. Create
+the model with `embeddings=True` before calling them.
 
-* `embed()` ➔ **Deprecated.**
-* `create_embedding()` ➔ **Deprecated.**
+```python
+from llama_cpp import Llama, LLAMA_POOLING_TYPE_UNSPECIFIED
 
-**Migration Note:** Do not use `Llama(..., embeddings=True)` combined with `model.create_embedding(...)`. Instead, use the dedicated `LlamaEmbedding` class, which offers optimized batching and reranking support.
-*See: [[LlamaEmbedding]]*
+llm = Llama(
+    model_path="path/to/embedding-model.gguf",
+    embeddings=True,
+    pooling_type=LLAMA_POOLING_TYPE_UNSPECIFIED,
+    n_batch=512,
+    n_ubatch=512,
+    n_seq_max=8,
+    kv_unified=True,
+)
+
+try:
+    # Raw sequence embeddings with explicit L2 normalization.
+    vectors = llm.embed(["query", "document"], normalize=2)
+
+    # OpenAI-compatible response.
+    response = llm.create_embedding(
+        ["query", "document"],
+        normalize=True,
+    )
+finally:
+    llm.close()
+```
+
+### `embed(input, normalize=False, truncate=True, separator=None, return_count=False)`
+
+Generate raw embedding values for strings or pre-tokenized inputs.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `input` | `Union[str, List[str], List[List[int]]]` | Required | A single string, a list of strings, or a list containing pre-tokenized token-ID lists. |
+| `normalize` | `Union[bool, int]` | `False` | `False` returns raw values, while `True` applies L2 normalization. Integer modes are listed below. Rank outputs are not normalized. |
+| `truncate` | `bool` | `True` | Truncate each input to the smaller of the context capacity and logical batch capacity. If disabled, an input longer than `n_batch` raises `ValueError`. |
+| `separator` | `Optional[str]` | `None` | Split a single string into multiple independent inputs. When set, the result uses the batch return shape. |
+| `return_count` | `bool` | `False` | Return `(result, total_token_count)` instead of only the embedding result. |
+
+Normalization modes follow the llama.cpp embedding example:
+
+| Value | Behavior |
+|---|---|
+| `False` or `-1` | No normalization |
+| `True` or `2` | Euclidean/L2 normalization |
+| `0` | Scale by the maximum absolute value to a maximum magnitude of `32760` |
+| `1` | Taxicab/L1 normalization |
+| Integer greater than `2` | Corresponding p-norm normalization |
+
+Unlike `LlamaEmbedding.embed()`, the standard `Llama.embed()` method defaults to
+raw, unnormalized output for backward compatibility.
+
+The return shape depends on the input and pooling type:
+
+| Input / pooling mode | Return shape |
+|---|---|
+| Single string with sequence pooling | `List[float]` |
+| String list or separator-split string with sequence pooling | `List[List[float]]` |
+| `LLAMA_POOLING_TYPE_NONE` | One token embedding matrix per input: `List[List[float]]` for a single string or `List[List[List[float]]]` for a batch |
+| `LLAMA_POOLING_TYPE_RANK` with one classifier output | A scalar for a single string or a list of scalars for a batch |
+| `LLAMA_POOLING_TYPE_RANK` with multiple classifier outputs | A classifier vector for each input |
+| Any mode with `return_count=True` | `(result, total_token_count)` |
+
+Use `LLAMA_POOLING_TYPE_UNSPECIFIED` for ordinary sentence embeddings unless
+the model documentation requires a specific sequence pooling strategy.
+`LLAMA_POOLING_TYPE_NONE` is token-level output and should not be used when one
+vector per input document is expected.
+
+### `create_embedding(input, model=None, normalize=False, truncate=True)`
+
+Wrap sequence or token-level embedding output in an OpenAI-compatible response:
+
+```python
+{
+    "object": "list",
+    "data": [
+        {
+            "object": "embedding",
+            "embedding": [...],
+            "index": 0,
+        }
+    ],
+    "model": "path/to/embedding-model.gguf",
+    "usage": {
+        "prompt_tokens": 12,
+        "total_tokens": 12,
+    },
+}
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `input` | `Union[str, List[str]]` | Required | One string or a list of strings. |
+| `model` | `Optional[str]` | `None` | Model name placed in the response. Defaults to `model_path`. |
+| `normalize` | `Union[bool, int]` | `False` | Passed directly to `embed()`. |
+| `truncate` | `bool` | `True` | Passed directly to `embed()`. |
+
+For parallel batches, `n_seq_max` must cover every sequence ID active in a
+single decode batch. The default `n_seq_max=1` is valid and processes multiple
+inputs sequentially. Increasing it allows more inputs to be decoded in
+parallel; for example, `n_seq_max=8` permits IDs `0` through `7` in one batch.
+`n_batch` limits logical input tokens, `n_ubatch` controls the physical token
+batch, and `n_seq_max` limits independent sequences.
+
+`LlamaEmbedding` remains available as the specialized convenience class. It
+automatically enables embedding-oriented context options, defaults to L2
+normalization, provides additional output formats, and adds the `rank()` helper
+for formatting query/document pairs.
+
+> **OpenAI compatibility:** use sequence pooling when calling
+> `create_embedding()` through an OpenAI-compatible client. Token-level pooling
+> (`LLAMA_POOLING_TYPE_NONE`) produces nested token vectors rather than the
+> single flat vector normally expected for each input.
 
 ---
 
 ## Related Links
 
-* [[Index-Home](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/index.md)]
-* [[Llama Cache](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/modules/LlamaCache.md)] - Implementing disk or RAM-based prompt caching (LlamaRAMCache, **TrieCache**, **HybridCheckpointCache**).
-* [[Llama Embedding](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/modules/LlamaEmbedding.md)] - Dedicated class for text embeddings and reranking.
-* [[Llama Speculative Decoding](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/modules/LlamaSpeculative.md)] - Provides draft model interfaces and prompt-based speculative decoding helpers.
+* [[Index-Home](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/index.md)]
+* [[Llama Cache](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/modules/LlamaCache.md)] - Implementing disk or RAM-based prompt caching (LlamaRAMCache, **TrieCache**, **HybridCheckpointCache**).
+* [[Llama Embedding](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/modules/LlamaEmbedding.md)] - Dedicated class for text embeddings and reranking.
+* [[Llama Speculative Decoding](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/modules/LlamaSpeculative.md)] - Configuring stateful MTP and n-gram speculative engines, rollback, statistics, and benchmarks.
 * [[ChatHandlers]] - Customizing `LlamaChatCompletionHandler` for function calling and vision/omni models (e.g., `[[Gemma4ChatHandler]]`, `[[Qwen35ChatHandler]]`).

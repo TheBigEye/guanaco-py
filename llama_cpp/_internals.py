@@ -54,11 +54,14 @@ class LlamaModel:
         self.params = params
         self.verbose = verbose
         self._exit_stack = ExitStack()
+        self.model = None
+        self.vocab = None
+        self._lora_registry: Dict[str, LlamaLoraAdapter] = {}
 
         model = None
 
         if not os.path.exists(path_model):
-            raise ValueError(f"Model path does not exist: {path_model}")
+            raise ValueError(f"LlamaModel[__init__]: Model path does not exist: {path_model}")
 
         with suppress_stdout_stderr(disable=verbose):
             model = llama_cpp.llama_model_load_from_file(
@@ -68,15 +71,20 @@ class LlamaModel:
         if model is None:
             raise ValueError(f"Failed to load model from file: {path_model}")
 
-        vocab = llama_cpp.llama_model_get_vocab(model)
-
-        if vocab is None:
-            raise ValueError(f"Failed to get vocab from model: {path_model}")
-
+        # Record ownership immediately so every later failure can release the
+        # native model. In particular, a failed vocab lookup must not leak the
+        # successfully loaded model.
         self.model = model
-        self.vocab = vocab
+        try:
+            vocab = llama_cpp.llama_model_get_vocab(model)
+            if vocab is None:
+                raise ValueError(f"LlamaModel[__init__]: Failed to get vocab from model: {path_model}")
+        except BaseException:
+            llama_cpp.llama_model_free(model)
+            self.model = None
+            raise
 
-        self._lora_registry: Dict[str, LlamaLoraAdapter] = {}
+        self.vocab = vocab
 
     def close(self):
         """Manually free LlamaModel and Vocab/Lora resources."""
@@ -100,9 +108,13 @@ class LlamaModel:
         self.close()
 
     def vocab_type(self) -> int:
-        return llama_cpp.llama_vocab_type(self.model)
+        if self.vocab is None:
+            raise RuntimeError("LlamaModel.vocab_type: vocab is None")
+        return llama_cpp.llama_vocab_type(self.vocab)
 
     def n_vocab(self) -> int:
+        if self.vocab is None:
+            raise RuntimeError("LlamaModel.n_vocab: vocab is None")
         return llama_cpp.llama_vocab_n_tokens(self.vocab)
 
     def n_ctx_train(self) -> int:
@@ -123,6 +135,9 @@ class LlamaModel:
     def n_layer(self) -> int:
         return llama_cpp.llama_model_n_layer(self.model)
 
+    def n_layer_nextn(self) -> int:
+        return llama_cpp.llama_model_n_layer_nextn(self.model)
+
     def n_head(self) -> int:
         return llama_cpp.llama_model_n_head(self.model)
 
@@ -131,6 +146,55 @@ class LlamaModel:
 
     def n_swa(self) -> int:
         return llama_cpp.llama_model_n_swa(self.model)
+
+    def target_layer_ids_n(self) -> int:
+        """Return the number of target-model layers extracted by this model."""
+        return llama_cpp.llama_model_target_layer_ids_n(self.model)
+
+    def target_layer_ids(self) -> List[int]:
+        """Return the target-model layer indices extracted by this model."""
+        count = self.target_layer_ids_n()
+        if count == 0:
+            return []
+
+        layer_ids = llama_cpp.llama_model_target_layer_ids(self.model)
+        if not layer_ids:
+            raise RuntimeError(
+                "LlamaModel.target_layer_ids: native API returned a null pointer "
+                f"for {count} layer IDs"
+            )
+        return [int(layer_ids[i]) for i in range(count)]
+
+    def get_tok_embd(self) -> npt.NDArray[np.float32]:
+        """Return a copy of the token embedding matrix as ``[n_vocab, n_embd]``."""
+        element_count = llama_cpp.llama_model_get_tok_embd(self.model, None)
+        if element_count == 0:
+            raise RuntimeError(
+                "LlamaModel.get_tok_embd: token embedding matrix is unavailable"
+            )
+
+        n_vocab = self.n_vocab()
+        n_embd = self.n_embd()
+        expected_count = n_vocab * n_embd
+        if element_count != expected_count:
+            raise RuntimeError(
+                "LlamaModel.get_tok_embd: unexpected token embedding size: "
+                f"native API returned {element_count} elements, expected "
+                f"{expected_count} ({n_vocab} x {n_embd})"
+            )
+
+        out = np.empty(element_count, dtype=np.float32)
+        written = llama_cpp.llama_model_get_tok_embd(
+            self.model,
+            out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        )
+        if written != element_count:
+            raise RuntimeError(
+                "LlamaModel.get_tok_embd: failed to copy the complete token "
+                f"embedding matrix ({written}/{element_count} elements)"
+            )
+
+        return out.reshape(n_vocab, n_embd)
 
     def rope_freq_scale_train(self) -> float:
         """
@@ -146,18 +210,29 @@ class LlamaModel:
         llama_cpp.llama_model_desc(self.model, buf, 256)
         return buf.value.decode("utf-8")
 
+    def model_ftype(self) -> int:
+        """
+        Get the model file type (quantization), e.g. LLAMA_FTYPE_MOSTLY_Q8_0
+        """
+        return llama_cpp.llama_model_ftype(self.model)
+
     def model_size(self) -> int:
         """
         Returns the total size of all the tensors in the model in bytes
         """
         return llama_cpp.llama_model_size(self.model)
 
-    def model_chat_template(self, name: bytes) -> str:
+    def model_chat_template(self, name: Optional[bytes] = None) -> Optional[str]:
         """
-        Get the default chat template. Returns nullptr if not available
-        If name is NULL, returns the default chat template
+        Get a chat template from the model.
+
+        If name is None, returns the default chat template.
+        Returns None if no chat template is available.
         """
-        return llama_cpp.llama_model_chat_template(self.model, name).decode("utf-8")
+        template = llama_cpp.llama_model_chat_template(self.model, name)
+        if template is None:
+            return None
+        return template.decode("utf-8")
 
     def n_params(self) -> int:
         """
@@ -556,6 +631,10 @@ class LlamaContext:
             self._exit_stack.close()
             self._exit_stack = None
 
+        # The context no longer needs to keep its parent model alive once the
+        # native context and its callbacks have been released.
+        self.model = None
+
     def __del__(self):
         self.close()
 
@@ -728,7 +807,14 @@ class LlamaContext:
                           (e.g., negative error codes or invalid batch structures).
         """
         self._assert_ctx()
-        return_code = llama_cpp.llama_decode(self.ctx, batch.batch)
+        try:
+            return_code = llama_cpp.llama_decode(self.ctx, batch.batch)
+        except Exception as e:
+            raise RuntimeError(
+                "llama_decode raised a native exception before returning a status code. "
+                "This may indicate an invalid batch, invalid token id, corrupted context, "
+                "backend memory issue, or native access violation."
+            ) from e
 
         if return_code == 0:
             return 0
@@ -830,6 +916,63 @@ class LlamaContext:
     def get_embeddings_seq(self, seq_id: int):
         self._assert_ctx()
         return llama_cpp.llama_get_embeddings_seq(self.ctx, seq_id)
+
+    def set_embeddings_nextn(self, enabled: bool, masked: bool) -> None:
+        """
+        Set whether the context outputs nextn embeddings or not
+        If masked == true,  output the embeddings only for the tokens with batch.logits != 0
+        If masked == false, output the embeddings for all tokens in the batch regardless of batch.logits
+        """
+        self._assert_ctx()
+        llama_cpp.llama_set_embeddings_nextn(self.ctx, enabled, masked)
+
+    def get_embeddings_nextn(self):
+        self._assert_ctx()
+        embeddings = llama_cpp.llama_get_embeddings_nextn(self.ctx)
+        if not embeddings:
+            raise RuntimeError("LlamaContext.get_embeddings_nextn: output is unavailable")
+        return embeddings
+
+    def get_embeddings_nextn_ith(self, i: int):
+        self._assert_ctx()
+        embeddings = llama_cpp.llama_get_embeddings_nextn_ith(self.ctx, i)
+        if not embeddings:
+            raise RuntimeError(
+                f"LlamaContext.get_embeddings_nextn_ith: invalid output index {i}"
+            )
+        return embeddings
+
+    def set_embeddings_layer_inp(self, layer_id: int, enabled: bool) -> None:
+        self._assert_ctx()
+        if layer_id < 0:
+            raise ValueError("layer_id must be non-negative")
+        llama_cpp.llama_set_embeddings_layer_inp(self.ctx, layer_id, enabled)
+
+    def get_embeddings_layer_inp(self, layer_id: int):
+        self._assert_ctx()
+        if layer_id < 0:
+            raise ValueError("layer_id must be non-negative")
+        embeddings = llama_cpp.llama_get_embeddings_layer_inp(self.ctx, layer_id)
+        if not embeddings:
+            raise RuntimeError(
+                f"LlamaContext.get_embeddings_layer_inp: layer {layer_id} output is unavailable"
+            )
+        return embeddings
+
+    def set_nextn_layer_offset(self, offset: int) -> None:
+        """
+        Select which appended NextN block the DECODER_MTP graph runs (offset past
+        the trunk: il = n_layer() + offset). Used by the speculative NextN driver to
+        chain multiple trained NextN heads. Default 0 (first head).
+        """
+        self._assert_ctx()
+        if offset < 0:
+            raise ValueError("NextN layer offset must be non-negative")
+        llama_cpp.llama_set_nextn_layer_offset(self.ctx, offset)
+
+    def get_ctx_other(self):
+        self._assert_ctx()
+        return llama_cpp.llama_get_ctx_other(self.ctx)
 
     def reset_timings(self):
         llama_cpp.llama_perf_context_reset(self.ctx)
@@ -979,37 +1122,102 @@ class LlamaBatch:
         n_tokens: int,
         embd: int,
         n_seq_max: int,
+        mixed: bool = False,
         verbose: bool = True
     ):
         # logical validity of parameters
         if n_tokens <= 0:
-            raise ValueError(f"n_tokens must be positive, got {n_tokens}")
+            raise ValueError(f"LlamaBatch[__init__]: n_tokens must be positive, got {n_tokens}")
+        if embd < 0:
+            raise ValueError(f"LlamaBatch[__init__]: embd must be non-negative, got {embd}")
         if n_seq_max <= 0:
-            raise ValueError(f"n_seq_max must be positive, got {n_seq_max}")
+            raise ValueError(f"LlamaBatch[__init__]: n_seq_max must be positive, got {n_seq_max}")
+        if mixed and embd <= 0:
+            raise ValueError("LlamaBatch[__init__]: mixed batch requires embd > 0.")
 
         self.n_tokens_capacity = n_tokens
         self.embd = embd
         self.n_seq_max = n_seq_max
+        self.mixed = mixed
         self.verbose = verbose
+        self._token_buf = None
+        self._owns_token = False
+        self._embd_view = None
         self._exit_stack = ExitStack()
+        self.batch = None
 
-        batch = llama_cpp.llama_batch_init(self.n_tokens_capacity, self.embd, self.n_seq_max)
+        # llama_batch_init allocates either batch.token or batch.embd:
+        #
+        #   embd == 0 -> token batch
+        #   embd > 0  -> embedding batch
+        #
+        # Some llama.cpp paths, such as EAGLE3/MTP, manually create mixed
+        # token+embd batches after initialization. This wrapper keeps that
+        # possibility open, but add_token/add_sequence only support token input.
+        batch = llama_cpp.llama_batch_init(
+            self.n_tokens_capacity,
+            self.embd,
+            self.n_seq_max,
+        )
 
         if batch is None:
             raise MemoryError(
-                f"Failed to allocate memory for llama_batch via llama_batch_init({n_tokens},{embd},{n_seq_max})"
+                f"Failed to allocate memory for llama_batch via "
+                f"llama_batch_init({n_tokens},{embd},{n_seq_max})"
             )
 
+        # Take ownership before validating or allocating supplementary Python
+        # buffers so close() can release the native allocation on every failure.
         self.batch = batch
+        try:
+            if mixed:
+                if bool(batch.token):
+                    raise RuntimeError(
+                        "LlamaBatch[__init__]: expected batch.token to be NULL for "
+                        "mixed embedding batch initialized with embd > 0."
+                    )
+                if not bool(batch.embd):
+                    raise RuntimeError(
+                        "LlamaBatch[__init__]: expected batch.embd to be non-NULL "
+                        "for mixed batch."
+                    )
+
+                self._token_buf = (
+                    llama_cpp.llama_token * self.n_tokens_capacity
+                )()
+                batch.token = self._token_buf
+                self._owns_token = True
+
+            if self.embd > 0:
+                # Keep a 2-D NumPy view over the native embedding buffer. MTP
+                # hidden rows are already contiguous float32 arrays, so assigning
+                # through this view performs one native copy instead of one
+                # Python/ctypes write per hidden element.
+                self._embd_view = np.ctypeslib.as_array(
+                    batch.embd,
+                    shape=(self.n_tokens_capacity * self.embd,),
+                ).reshape(self.n_tokens_capacity, self.embd)
+        except BaseException:
+            self.close()
+            raise
 
     def close(self):
         """Manually free LlamaBatch resources."""
+        # Drop the NumPy view before freeing the native storage it references.
+        self._embd_view = None
         if getattr(self, "batch", None) is not None:
             try:
+                if getattr(self, "_owns_token", False):
+                    # batch.token points to a Python-owned ctypes buffer in mixed mode.
+                    # llama_batch_free() would call free(batch.token), so clear it first.
+                    self.batch.token = None
                 llama_cpp.llama_batch_free(self.batch)
             except Exception:
                 pass
             self.batch = None
+
+        self._token_buf = None
+        self._owns_token = False
 
         if getattr(self, "_exit_stack", None) is not None and hasattr(self._exit_stack, "close"):
             self._exit_stack.close()
@@ -1041,17 +1249,90 @@ class LlamaBatch:
             return self.n_tokens_capacity - self.batch.n_tokens
         else:
             raise RuntimeError(
-                f"LlamaBatch Critical Error: n_tokens ({self.batch.n_tokens}) exceeds capacity ({self.n_tokens_capacity}). "
-                "This implies a buffer overflow or corrupted internal state."
+                f"LlamaBatch Critical Error: n_tokens ({self.batch.n_tokens}) exceeds capacity "
+                f"({self.n_tokens_capacity}). This implies a buffer overflow or "
+                "corrupted internal state."
             )
 
     def reset(self):
         """
-        Resets the batch counter to 0. Does not free memory, just resets the index.
-        Call this before starting a new decoding step.
+        Reset the logical batch counter.
+
+        This does not free or clear the underlying C buffers. llama_decode only
+        reads entries in [0, batch.n_tokens), so resetting n_tokens is enough and
+        matches llama.cpp's reusable batch pattern.
         """
-        if self.batch is not None:
-            self.batch.n_tokens = 0
+        if self.batch is None:
+            return
+        self.batch.n_tokens = 0
+
+    def _require_open(self, where: str) -> None:
+        if self.batch is None:
+            raise RuntimeError(f"LlamaBatch.{where}: batch has been closed.")
+
+    def _require_token_buffer(self, where: str) -> None:
+        """
+        Require that batch.token is available.
+
+        llama_batch_init allocates batch.token only when embd == 0. Some advanced
+        llama.cpp paths manually create mixed token+embd batches, but this Python
+        token API should only write token ids when batch.token is non-null.
+        """
+        self._require_open(where)
+
+        if self.mixed:
+            raise RuntimeError(
+                f"LlamaBatch.{where} is for token-only batches. "
+                "Use add_token_embedding for mixed batches."
+            )
+
+        if not bool(self.batch.token):
+            raise RuntimeError(
+                f"LlamaBatch.{where} requires a token buffer, but batch.token is NULL. "
+                "This batch was likely initialized as an embedding batch. Use a "
+                "separate embedding or mixed-batch path instead."
+            )
+
+    def _validate_seq_ids(self, seq_ids: Sequence[int], where: str) -> int:
+        n_seq_id = len(seq_ids)
+
+        if n_seq_id <= 0:
+            raise ValueError(f"LlamaBatch.{where}: seq_ids must not be empty.")
+
+        if n_seq_id > self.n_seq_max:
+            raise ValueError(
+                f"LlamaBatch.{where}: token belongs to {n_seq_id} sequences, "
+                f"but this batch was initialized with n_seq_max={self.n_seq_max}. "
+                f"Increase n_seq_max to at least {n_seq_id} when constructing "
+                "Llama, LlamaEmbedding, or LlamaBatch."
+            )
+
+        for seq_id in seq_ids:
+            if not isinstance(seq_id, int):
+                raise ValueError(
+                    f"LlamaBatch.{where}: seq_id must be int, got "
+                    f"{type(seq_id).__name__}."
+                )
+
+            if seq_id < 0:
+                raise ValueError(
+                    f"LlamaBatch.{where}: invalid seq_id {seq_id}; "
+                    "sequence IDs must be non-negative integers."
+                )
+
+            if seq_id >= self.n_seq_max:
+                required_n_seq_max = seq_id + 1
+                raise ValueError(
+                    f"LlamaBatch.{where}: seq_id={seq_id} exceeds the configured "
+                    f"sequence capacity (n_seq_max={self.n_seq_max}; valid IDs "
+                    f"are 0 through {self.n_seq_max - 1}). For parallel batching, "
+                    f"initialize Llama or LlamaEmbedding with "
+                    f"n_seq_max>={required_n_seq_max}, or create LlamaBatch "
+                    "with that value. Use seq_id=0 when processing only one "
+                    "sequence."
+                )
+
+        return n_seq_id
 
     def add_token(self, token: int, pos: int, seq_ids: Sequence[int], logits: bool):
         """
@@ -1066,6 +1347,8 @@ class LlamaBatch:
                      A single token can be part of multiple sequences simultaneously.
             logits: A boolean flag indicating whether the backend should compute logits for this token.
         """
+        self._require_token_buffer("add_token")
+
         idx = self.batch.n_tokens
         if idx >= self.n_tokens_capacity:
             raise IndexError(f"LlamaBatch overflow[add_token]: Cannot add token. Capacity {self.n_tokens_capacity} reached.")
@@ -1073,10 +1356,8 @@ class LlamaBatch:
         self.batch.token[idx] = token
         self.batch.pos[idx] = pos
 
-        n_seq_id = len(seq_ids)
-        if n_seq_id > self.n_seq_max:
-            raise ValueError(f"LlamaBatch Error[add_token]: Token belongs to {n_seq_id} sequences, "
-                             f"but n_seq_max was initialized to {self.n_seq_max}.")
+        n_seq_id = self._validate_seq_ids(seq_ids, "add_token")
+
         self.batch.n_seq_id[idx] = n_seq_id
 
         for i, seq_id in enumerate(seq_ids):
@@ -1089,22 +1370,36 @@ class LlamaBatch:
         self,
         token_array: Sequence[int],
         pos_array: Sequence[int],
-        seq_ids: Sequence[Sequence[int]],
+        seq_ids: Sequence[int],
         logits_array: Sequence[bool]
     ):
         """
-        Adds a sequence of tokens to the batch in a vectorized manner.
-        Strictly maps the provided arrays to the underlying C++ batch structure without subjective overriding.
+        Adds a sequence of tokens to the batch.
 
         Args:
-            token_array: A sequence of token IDs to be evaluated.
-            pos_array: A sequence of logical positions corresponding to each token.
-            seq_id_array: A sequence of lists, where each list contains the sequence IDs for the respective token.
-                          (e.g., [[0], [0], [0]] for 3 tokens belonging to sequence 0).
-            logits_array: A sequence of boolean flags indicating whether to compute logits for each token.
+            token_array: Token ids to evaluate.
+            pos_array: Logical positions for each token.
+            seq_ids: Sequence ids shared by every token in this call, usually [0].
+                    A token can belong to multiple sequences, for example [0, 1],
+                    matching llama.cpp's per-token seq_id list.
+            logits_array: Whether to request logits/output for each token.
         """
+        self._require_token_buffer("add_sequence")
+
         n_tokens = len(token_array)
         current_count = self.batch.n_tokens
+
+        if len(pos_array) != n_tokens:
+            raise ValueError(
+                f"LlamaBatch.add_sequence: pos_array length mismatch: "
+                f"{len(pos_array)} != {n_tokens}."
+            )
+
+        if len(logits_array) != n_tokens:
+            raise ValueError(
+                f"LlamaBatch.add_sequence: logits_array length mismatch: "
+                f"{len(logits_array)} != {n_tokens}."
+            )
 
         if current_count + n_tokens > self.n_tokens_capacity:
             raise IndexError(
@@ -1112,13 +1407,11 @@ class LlamaBatch:
                 f"Space left: {self.n_tokens_capacity - current_count}"
             )
 
-        n_seq_id = len(seq_ids)
-        if n_seq_id > self.n_seq_max:
-            raise ValueError(f"LlamaBatch Error[add_sequence]: Token belongs to {n_seq_id} sequences, "
-                             f"but n_seq_max was initialized to {self.n_seq_max}.")
+        n_seq_id = self._validate_seq_ids(seq_ids, "add_sequence")
 
         for i in range(n_tokens):
             j = current_count + i
+
             self.batch.token[j] = token_array[i]
             self.batch.pos[j] = pos_array[i]
 
@@ -1130,14 +1423,217 @@ class LlamaBatch:
 
         self.batch.n_tokens += n_tokens
 
+    def _require_embedding_buffer(self, where: str) -> None:
+        self._require_open(where)
 
-# Embedding functions
-def normalize_embedding(embedding):
-    norm = float(np.linalg.norm(embedding))
-    if norm == 0.0:
-        return embedding
-    return [v / norm for v in embedding]
+        if self.mixed:
+            raise RuntimeError(
+                f"LlamaBatch.{where} is for embedding-only batches. "
+                "Use add_token_embedding for mixed batches."
+            )
 
+        if self.embd <= 0:
+            raise RuntimeError(
+                f"LlamaBatch.{where} requires an embedding batch, but embd={self.embd}."
+            )
+
+        if not bool(self.batch.embd):
+            raise RuntimeError(
+                f"LlamaBatch.{where} requires batch.embd, but batch.embd is NULL."
+            )
+
+    def add_embedding(
+        self,
+        embedding: Sequence[float],
+        pos: int,
+        seq_ids: Sequence[int],
+        logits: bool = False,
+    ) -> None:
+        """
+        Add one embedding row to an embedding batch.
+
+        This is for embd-only llama_batch input:
+            batch.token == NULL
+            batch.embd  != NULL
+
+        Args:
+            embedding: One embedding vector of length self.embd.
+            pos: Logical sequence position.
+            seq_ids: Sequence ids this embedding belongs to, usually [0].
+            logits: Whether to request output for this row.
+        """
+        self._require_embedding_buffer("add_embedding")
+
+        if len(embedding) != self.embd:
+            raise ValueError(
+                f"LlamaBatch.add_embedding: embedding length mismatch: "
+                f"{len(embedding)} != embd({self.embd})."
+            )
+
+        idx = self.batch.n_tokens
+        if idx >= self.n_tokens_capacity:
+            raise IndexError(
+                f"LlamaBatch overflow[add_embedding]: capacity "
+                f"{self.n_tokens_capacity} reached."
+            )
+
+        n_seq_id = self._validate_seq_ids(seq_ids, "add_embedding")
+
+        assert self._embd_view is not None
+        self._embd_view[idx, :] = embedding
+
+        self.batch.pos[idx] = pos
+        self.batch.n_seq_id[idx] = n_seq_id
+
+        for i, seq_id in enumerate(seq_ids):
+            self.batch.seq_id[idx][i] = seq_id
+
+        self.batch.logits[idx] = logits
+        self.batch.n_tokens += 1
+
+    def add_embeddings(
+        self,
+        embeddings: Sequence[float],
+        *,
+        pos_array: Sequence[int],
+        seq_ids: Sequence[int],
+        logits_array: Optional[Sequence[bool]] = None,
+    ) -> None:
+        """
+        Add multiple embedding rows to an embedding batch.
+
+        embeddings layout:
+            row-major [n_tokens, self.embd]
+
+        The number of rows is inferred from pos_array. This method supports
+        embedding-only llama_batch inputs:
+
+            batch.token == NULL
+            batch.embd  != NULL
+
+        It only supports one logical position per embedding row. M-RoPE media
+        embedding batches should continue to use MTMD helper APIs.
+        """
+        self._require_embedding_buffer("add_embeddings")
+
+        n_tokens = len(pos_array)
+        if n_tokens <= 0:
+            raise ValueError("LlamaBatch.add_embeddings: pos_array must not be empty.")
+
+        if logits_array is None:
+            logits_array = [False] * n_tokens
+        elif len(logits_array) != n_tokens:
+            raise ValueError(
+                f"LlamaBatch.add_embeddings: logits_array length mismatch: "
+                f"{len(logits_array)} != {n_tokens}."
+            )
+
+        expected = n_tokens * self.embd
+        if len(embeddings) != expected:
+            raise ValueError(
+                f"LlamaBatch.add_embeddings: embeddings length mismatch: "
+                f"{len(embeddings)} != n_tokens({n_tokens}) * embd({self.embd}) = {expected}."
+            )
+
+        current_count = self.batch.n_tokens
+        if current_count + n_tokens > self.n_tokens_capacity:
+            raise IndexError(
+                f"LlamaBatch overflow[add_embeddings]: cannot add {n_tokens} rows. "
+                f"Space left: {self.n_tokens_capacity - current_count}."
+            )
+
+        n_seq_id = self._validate_seq_ids(seq_ids, "add_embeddings")
+
+        assert self._embd_view is not None
+        self._embd_view[
+            current_count : current_count + n_tokens, :
+        ] = np.asarray(embeddings, dtype=np.float32).reshape(n_tokens, self.embd)
+
+        for i in range(n_tokens):
+            j = current_count + i
+
+            self.batch.pos[j] = int(pos_array[i])
+            self.batch.n_seq_id[j] = n_seq_id
+
+            for k, seq_id in enumerate(seq_ids):
+                self.batch.seq_id[j][k] = int(seq_id)
+
+            self.batch.logits[j] = int(logits_array[i])
+
+        self.batch.n_tokens += n_tokens
+
+    def _require_mixed_buffer(self, where: str) -> None:
+        self._require_open(where)
+
+        if not self.mixed:
+            raise RuntimeError(
+                f"LlamaBatch.{where} requires mixed=True batch."
+            )
+
+        if self.embd <= 0:
+            raise RuntimeError(
+                f"LlamaBatch.{where} requires mixed token+embedding batch, "
+                f"but embd={self.embd}."
+            )
+
+        if not bool(self.batch.token):
+            raise RuntimeError(
+                f"LlamaBatch.{where} requires batch.token, but batch.token is NULL."
+            )
+
+        if not bool(self.batch.embd):
+            raise RuntimeError(
+                f"LlamaBatch.{where} requires batch.embd, but batch.embd is NULL."
+            )
+
+    def add_token_embedding(
+        self,
+        token: int,
+        embedding: Sequence[float],
+        pos: int,
+        seq_ids: Sequence[int],
+        logits: bool,
+    ) -> None:
+        """
+        Add one mixed token+embedding row.
+
+        This is for EAGLE3/MTP-style decoder inputs where each batch row contains:
+            token id
+            embedding vector
+            position
+            seq ids
+            logits flag
+        """
+        self._require_mixed_buffer("add_token_embedding")
+
+        if len(embedding) != self.embd:
+            raise ValueError(
+                f"LlamaBatch.add_token_embedding: embedding length mismatch: "
+                f"{len(embedding)} != embd({self.embd})."
+            )
+
+        idx = self.batch.n_tokens
+        if idx >= self.n_tokens_capacity:
+            raise IndexError(
+                f"LlamaBatch overflow[add_token_embedding]: capacity "
+                f"{self.n_tokens_capacity} reached."
+            )
+
+        n_seq_id = self._validate_seq_ids(seq_ids, "add_token_embedding")
+
+        self.batch.token[idx] = token
+
+        assert self._embd_view is not None
+        self._embd_view[idx, :] = embedding
+
+        self.batch.pos[idx] = pos
+        self.batch.n_seq_id[idx] = n_seq_id
+
+        for i, seq_id in enumerate(seq_ids):
+            self.batch.seq_id[idx][i] = seq_id
+
+        self.batch.logits[idx] = logits
+        self.batch.n_tokens += 1
 
 class LlamaTokenDataArray:
     """
@@ -1330,7 +1826,7 @@ class LlamaSamplingParams:
     dynatemp_range: float = 0.00     # 0.0 = disabled
     dynatemp_exponent: float = 1.00  # controls how entropy maps to temperature in dynamic temperature sampler
 
-    penalty_last_n: int = 64         # last n tokens to penalize (0 = disable penalty, -1 = context size)
+    penalty_last_n: int = 64         # last n tokens to penalize (0 = disable penalty)
     penalty_repeat: float = 1.0      # 1.0 = disabled
     penalty_freq: float = 0.00       # 0.0 = disabled
     penalty_present: float = 0.00    # 0.0 = disabled
@@ -1338,7 +1834,7 @@ class LlamaSamplingParams:
     dry_multiplier: float = 0.0      # 0.0 = disabled;      DRY repetition penalty for tokens extending repetition:
     dry_base: float = 1.75           # 0.0 = disabled;      multiplier * base ^ (length of sequence before token - allowed length)
     dry_allowed_length: int = 2      # tokens extending repetitions beyond this receive penalty
-    dry_penalty_last_n: int = -1     # how many tokens to scan for repetitions (0 = disable penalty, -1 = context size)
+    dry_penalty_last_n: int = 64     # how many tokens to scan for repetitions (0 = disable penalty)
 
     adaptive_target: float = -1.0    # select tokens near this probability (valid range 0.0 to 1.0; negative = disabled)
     adaptive_decay: float = 0.90     # EMA decay for adaptation; history ≈ 1/(1-decay) tokens (0.0 - 0.99)
@@ -1532,6 +2028,19 @@ class LlamaSamplingContext:
         self.model = model
 
         self.params = params
+        # Initialize every resource-bearing attribute before performing work
+        # that can fail. This keeps close() safe for partially initialized
+        # instances.
+        self.prev = None
+        self._cur_p = None
+        self.sampler_chain = None
+        self.grammar_sampler = None
+        self.reasoning_budget_sampler = None
+        self._logits_view = None
+        self._logits_ptr_addr = None
+        self._single_token = None
+        self._single_array = None
+
         self.vocab = llama_cpp.llama_model_get_vocab(model.model)
         self.n_vocab = model.n_vocab()
 
@@ -1551,9 +2060,6 @@ class LlamaSamplingContext:
                 self.params.penalty_last_n
             )
         self.prev = deque(maxlen=max(self.params.n_prev, 32))
-
-        # Reusable token data array
-        self._cur_p = LlamaTokenDataArray(n_vocab=self.n_vocab)
 
         # Reusable numpy logits view
         self._logits_view = None
@@ -1578,7 +2084,6 @@ class LlamaSamplingContext:
             self._build_sampler_chain()
 
         # Grammar sampler
-        self.grammar_sampler = None
         if params.grammar:
             self.grammar_sampler = GrammarSampler(
                 model,
@@ -1615,6 +2120,7 @@ class LlamaSamplingContext:
         # Note: In some implementations, penalties come before other samplers
         if CommonSamplerType.PENALTIES in p.samplers:
             s.add_penalties(
+                self.n_vocab,
                 p.penalty_last_n,
                 p.penalty_repeat,
                 p.penalty_freq,
@@ -1813,6 +2319,12 @@ class LlamaSamplingContext:
             self._logits_ptr_addr = cur_addr
 
         logits_array = self._logits_view
+        # Backend sampling returns before this point. Allocate the full-vocabulary
+        # CPU candidate array only when a CPU sampler/grammar fallback actually
+        # needs it; this matters for vocabularies with hundreds of thousands of
+        # entries.
+        if self._cur_p is None:
+            self._cur_p = LlamaTokenDataArray(n_vocab=self.n_vocab)
         cur_p = self._cur_p
 
         cur_p.copy_logits(logits_array)
@@ -1894,12 +2406,12 @@ class LlamaSamplingContext:
 
         # Free grammar sampler if it was initialized.
         # This releases underlying llama.cpp sampler memory.
-        if self.grammar_sampler:
+        if getattr(self, "grammar_sampler", None):
             self.grammar_sampler.close()
             self.grammar_sampler = None
 
         # Free the sampler chain and all attached C samplers.
-        if self.sampler_chain:
+        if getattr(self, "sampler_chain", None):
             self.sampler_chain.close()
             self.sampler_chain = None
 
@@ -1909,7 +2421,7 @@ class LlamaSamplingContext:
 
         # Release large token data buffer used during sampling.
         # Important for high-vocab models to avoid memory retention.
-        if hasattr(self, "_cur_p"):
+        if getattr(self, "_cur_p", None) is not None:
             try:
                 self._cur_p.close()
             except Exception:
@@ -1917,7 +2429,7 @@ class LlamaSamplingContext:
             self._cur_p = None
 
         # Clear token history deque to drop references.
-        if hasattr(self, "prev"):
+        if getattr(self, "prev", None) is not None:
             self.prev.clear()
             self.prev = None
 
@@ -1928,6 +2440,12 @@ class LlamaSamplingContext:
         # Break references to small C structs used in grammar rejection sampling.
         self._single_token = None
         self._single_array = None
+
+        # A closed sampling context must not keep the model or configuration
+        # graph alive merely because the wrapper itself is still referenced.
+        self.vocab = None
+        self.model = None
+        self.params = None
 
     def __del__(self):
         try:
@@ -1984,12 +2502,18 @@ class LlamaSamplingContext:
 
 class CustomSampler:
     """
-    Base class for Python-backed custom samplers in the Llama sampler chain.
+    CPU sampler adapter backed by Python callbacks.
 
     Responsibilities:
-    - Provides apply, accept, reset, free and clone callbacks for the C sampler chain.
-    - Keeps Python references alive to prevent GC while C sampler still holds function pointers.
-    - Implements safe close to clear all callback references.
+    - Expose Python apply, accept, reset, free, and clone functions through
+      llama_sampler_i callbacks.
+    - Keep callback references alive while llama.cpp holds their function
+      pointers.
+    - Release the native sampler and break callback reference cycles on close.
+
+    Backend sampling is intentionally unsupported. Every backend hook in
+    llama_sampler_i is explicitly initialized to NULL, including backend_reset
+    and copy_state, so llama.cpp keeps this sampler on the CPU callback path.
     """
 
     def __init__(
@@ -2040,7 +2564,7 @@ class CustomSampler:
         self._cb_free_ref = llama_cpp.llama_sampler_free_fn(_cb_free)
         self._cb_clone_ref = llama_cpp.llama_sampler_clone_fn(_cb_clone)
 
-        # Build llama_sampler_i
+        # Build the CPU-facing llama_sampler_i callback table.
         self.llama_sampler_i = llama_cpp.llama_sampler_i()
 
         self.llama_sampler_i.name = self._cb_name_ref
@@ -2050,7 +2574,9 @@ class CustomSampler:
         self.llama_sampler_i.free = self._cb_free_ref
         self.llama_sampler_i.clone = self._cb_clone_ref
 
-        # Disable backend hooks
+        # Explicitly disable every backend hook instead of relying on ctypes
+        # zero-initialization. Python-backed samplers operate through the CPU
+        # callbacks above and do not own backend sampling graph state.
         self.llama_sampler_i.backend_init = ctypes.cast(
             0, llama_cpp.llama_sampler_backend_init_fn
         )
@@ -2062,6 +2588,12 @@ class CustomSampler:
         )
         self.llama_sampler_i.backend_set_input = ctypes.cast(
             0, llama_cpp.llama_sampler_backend_set_input_fn
+        )
+        self.llama_sampler_i.backend_reset = ctypes.cast(
+            0, llama_cpp.llama_sampler_backend_reset_fn
+        )
+        self.llama_sampler_i.copy_state = ctypes.cast(
+            0, llama_cpp.llama_sampler_copy_state_fn
         )
 
         self.sampler_p = llama_cpp.llama_sampler_init(
@@ -2120,6 +2652,11 @@ class ReasoningBudgetSampler(CustomSampler):
 
     This mirrors the core idea of llama.cpp's reasoning-budget sampler while
     keeping the Python API small and explicit.
+
+    As a CustomSampler subclass, this remains CPU/Python-backed. Its backend
+    hooks, including backend_reset and copy_state, stay disabled; runtime state
+    is managed by the regular _accept(), _apply(), _reset(), and _clone()
+    callbacks instead.
     """
 
     def __init__(
@@ -2721,8 +3258,8 @@ class LlamaSampler:
                 c_trigger_tokens, len(trigger_tokens)
             ))
 
-    def add_penalties(self, penalty_last_n: int, penalty_repeat: float, penalty_freq: float, penalty_present: float):
-        self._add_sampler(llama_cpp.llama_sampler_init_penalties(penalty_last_n, penalty_repeat, penalty_freq, penalty_present))
+    def add_penalties(self, n_vocab: int, penalty_last_n: int, penalty_repeat: float, penalty_freq: float, penalty_present: float):
+        self._add_sampler(llama_cpp.llama_sampler_init_penalties(n_vocab, penalty_last_n, penalty_repeat, penalty_freq, penalty_present))
 
     def add_dry(self, model: LlamaModel, multiplier: float, base: float, allowed_len: int, last_n: int, breakers: List[str]):
         """DRY (Don't Repeat Yourself) sampler."""
@@ -2732,7 +3269,6 @@ class LlamaSampler:
 
         self._add_sampler(llama_cpp.llama_sampler_init_dry(
             model.vocab,
-            model.n_ctx_train(),
             multiplier,
             base,
             allowed_len,

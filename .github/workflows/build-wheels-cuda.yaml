@@ -2,99 +2,160 @@ name: Build Wheels (CUDA)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * 0'
+  workflow_call:
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: "2"
 
 jobs:
-  build_linux:
-    runs-on: ubuntu-latest
+  build-linux-x64:
+    name: Linux x64 / ${{ matrix.cuda.short }} / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-22.04
     container:
-      image: nvidia/cuda:${{ matrix.cuda_config.ver }}-devel-ubuntu22.04
+      image: nvidia/cuda:${{ matrix.cuda.version }}-devel-ubuntu22.04
     strategy:
       fail-fast: false
       matrix:
-        cuda_config:
-          - ver: 12.1.1
-            short: cu121
-            arch: 75;80;86;89;90
-          - ver: 12.2.2
-            short: cu122
-            arch: 75;80;86;89;90
-          - ver: 12.3.2
-            short: cu123
-            arch: 75;80;86;89;90
-          - ver: 12.4.1
-            short: cu124
-            arch: 75;80;86;89;90
-        pyver: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-    name: Linux CUDA ${{ matrix.cuda_config.ver }} Py ${{ matrix.pyver }}
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        cuda:
+          - { version: "12.1.1", short: cu121, arch: "75;80;86;89;90" }
+          - { version: "12.2.2", short: cu122, arch: "75;80;86;89;90" }
+          - { version: "12.3.2", short: cu123, arch: "75;80;86;89;90" }
+          - { version: "12.4.1", short: cu124, arch: "75;80;86;89;90" }
+          - { version: "12.6.3", short: cu126, arch: "75;80;86;89;90" }
+          - { version: "12.8.1", short: cu128, arch: "75;80;86;89;90;100;120" }
+          - { version: "13.1.0", short: cu131, arch: "75;80;86;89;90;100;120" }
+
     steps:
-      - name: Install system dependencies
+      - name: Install Linux build tools
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          echo "tzdata tzdata/Areas select America" | debconf-set-selections
-          echo "tzdata tzdata/Zones/America select New_York" | debconf-set-selections
-          ln -fs /usr/share/zoneinfo/America/New_York /etc/localtime
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev
+          rm -rf /var/lib/apt/lists/*
 
-          apt update && apt install -y software-properties-common git curl build-essential cmake libssl-dev
-          add-apt-repository ppa:deadsnakes/ppa -y
-          apt update
-          apt install -y python${{ matrix.pyver }} python${{ matrix.pyver }}-dev python${{ matrix.pyver }}-venv
-
-      - name: Set Python symlink and install pip + uv
-        run: |
-          update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${{ matrix.pyver }} 1
-          update-alternatives --install /usr/bin/python python /usr/bin/python${{ matrix.pyver }} 1
-
-          if [[ "${{ matrix.pyver }}" < "3.12" || "${{ matrix.pyver }}" == "3.11" ]]; then
-            python -m ensurepip --upgrade
-          else
-            curl https://bootstrap.pypa.io/get-pip.py | python --
-          fi
-
-          python -m pip install --upgrade uv
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout Guanaco and llama.cpp
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - name: Verify CUDA and Python
+      - name: Install uv and Python ${{ matrix.python-version }}
         run: |
-          python --version
-          uv --version
-          which python
-          cmake --version
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          $HOME/.local/bin/uv python install ${{ matrix.python-version }}
+          $HOME/.local/bin/uv venv --python ${{ matrix.python-version }} .venv
+          $HOME/.local/bin/uv pip install --python .venv/bin/python build
+
+      - name: Verify toolchain
+        run: |
+          .venv/bin/python --version
           nvcc --version
-          nvidia-smi || true
 
-      - name: Install build dependencies
-        run: |
-          uv pip install --system build wheel setuptools packaging
-
-      - name: Build wheel
+      - name: Build CUDA wheel
         env:
-          VERBOSE: 1
           CMAKE_ARGS: >-
-            -DGGML_CUDA=on
-            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda_config.arch }}
+            -DGGML_CUDA=ON
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda.arch }}
             -DGGML_CUDA_FORCE_MMQ=OFF
-            -DGGML_AVX=off -DGGML_AVX2=off -DGGML_FMA=off -DGGML_F16C=off
+            -DGGML_NATIVE=OFF
             -DLLAMA_BUILD_EXAMPLES=OFF
             -DLLAMA_BUILD_TESTS=OFF
             -DLLAMA_BUILD_SERVER=OFF
             -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -lcuda"
-        run: python -m build --wheel
+        run: .venv/bin/python -m build --wheel
 
-      - name: List wheels
-        run: ls -lh dist/*.whl
-
-      - name: Upload artifact
+      - name: Upload Linux CUDA wheel
         uses: actions/upload-artifact@v7
         with:
-          name: wheel-cuda-${{ matrix.pyver }}-${{ matrix.cuda_config.short }}
+          name: guanaco-py-cuda-linux-x64-${{ matrix.cuda.short }}-py${{ matrix.python-version }}
           path: dist/*.whl
+          if-no-files-found: error
+
+  build-windows-x64:
+    name: Windows x64 / ${{ matrix.cuda.short }} / Python ${{ matrix.python-version }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        cuda:
+          - { version: "12.1.1", short: cu121, arch: "75;80;86;89;90" }
+          - { version: "12.2.2", short: cu122, arch: "75;80;86;89;90" }
+          - { version: "12.3.2", short: cu123, arch: "75;80;86;89;90" }
+          - { version: "12.4.1", short: cu124, arch: "75;80;86;89;90" }
+          - { version: "12.6.3", short: cu126, arch: "75;80;86;89;90" }
+          - { version: "12.8.1", short: cu128, arch: "75;80;86;89;90;100;120" }
+          - { version: "13.1.0", short: cu131, arch: "75;80;86;89;90;100;120" }
+
+    steps:
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: x64
+
+      - name: Checkout Guanaco and llama.cpp
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up Python ${{ matrix.python-version }} x64
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: x64
+
+      - name: Install CUDA ${{ matrix.cuda.version }}
+        id: cuda-toolkit
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ matrix.cuda.version }}
+          method: network
+          use-github-cache: false
+
+      - name: Set up MSVC environment for nvcc
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          echo PATH=%PATH%>>%GITHUB_ENV%
+          echo INCLUDE=%INCLUDE%>>%GITHUB_ENV%
+          echo LIB=%LIB%>>%GITHUB_ENV%
+          echo LIBPATH=%LIBPATH%>>%GITHUB_ENV%
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: python -m pip install --upgrade pip build
+
+      - name: Verify toolchain
+        shell: pwsh
+        run: |
+          python --version
+          nvcc --version
+
+      - name: Build CUDA wheel
+        shell: pwsh
+        env:
+          CMAKE_GENERATOR: Ninja
+        run: |
+          $env:CMAKE_ARGS = @(
+            '-DGGML_CUDA=ON'
+            '-DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda.arch }}'
+            '-DGGML_CUDA_FORCE_MMQ=OFF'
+            '-DGGML_NATIVE=OFF'
+            '-DLLAMA_BUILD_EXAMPLES=OFF'
+            '-DLLAMA_BUILD_TESTS=OFF'
+            '-DLLAMA_BUILD_SERVER=OFF'
+          ) -join ' '
+          python -m pip install ninja
+          python -m build --wheel
+
+      - name: Upload Windows CUDA wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: guanaco-py-cuda-windows-x64-${{ matrix.cuda.short }}-py${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error

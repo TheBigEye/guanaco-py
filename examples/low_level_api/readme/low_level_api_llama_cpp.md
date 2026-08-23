@@ -14,7 +14,7 @@ Before running the script, ensure that you have the following dependencies insta
 ### Usage
 install depedencies:
 ```bash
-python -m pip install llama-cpp-python ctypes os multiprocessing
+python -m pip install guanaco-py ctypes os multiprocessing
 ```
 Run the script:
 ```bash

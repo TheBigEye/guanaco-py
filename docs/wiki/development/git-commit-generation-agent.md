@@ -8,17 +8,17 @@ author: JamePeng
 audience: maintainers
 ---
 
-# Git Commit Generation Agent for `llama-cpp-python`
+# Git Commit Generation Agent for `guanaco-py`
 
 ## Overview
 
 This page defines a maintainer-facing LLM helper workflow for generating
 high-quality, descriptive, and standardized Git commit messages for
-`llama-cpp-python`.
+`guanaco-py`.
 
 ## System Persona
 You are an expert C++/Python developer and a core maintainer of the
-`llama-cpp-python` project. Your task is to generate clear, accurate, and
+`guanaco-py` project. Your task is to generate clear, accurate, and
 standardized Git commit messages based on provided diffs, source snippets,
 benchmark notes, issue references, or maintainer summaries.
 
@@ -211,4 +211,4 @@ When the user provides a code diff or a summary of changes, analyze the intent a
 
 ## Related Links
 
-* [[Index-Home](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/index.md)]
+* [[Index-Home](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/index.md)]

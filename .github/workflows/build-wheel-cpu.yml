@@ -2,74 +2,82 @@ name: Build Wheels (CPU)
 
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
-  schedule:
-    - cron: '0 0 * * 0'
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   build-cpu:
+    name: CPU ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            platform: linux
-            python-version: "3.13"
-            cibw_build: cp39-manylinux_x86_64 cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64 cp314-manylinux_x86_64
-            cibw_skip: "*-musllinux_*"
-            cibw_image: manylinux_2_28
-            cibw_repair: ""
+            platform: linux-x64
+            cibw_archs: x86_64
+            cibw_test_skip: ""
+            cibw_build: >-
+              cp39-manylinux_x86_64 cp310-manylinux_x86_64
+              cp311-manylinux_x86_64 cp312-manylinux_x86_64
+              cp313-manylinux_x86_64 cp314-manylinux_x86_64
+          - os: ubuntu-latest
+            platform: linux-x86
+            cibw_archs: i686
+            # NumPy does not publish modern manylinux_i686 wheels. Build the
+            # Guanaco wheel, but avoid compiling NumPy six times just for CI smoke tests.
+            cibw_test_skip: "*-manylinux_i686"
+            cibw_build: >-
+              cp39-manylinux_i686 cp310-manylinux_i686
+              cp311-manylinux_i686 cp312-manylinux_i686
+              cp313-manylinux_i686 cp314-manylinux_i686
           - os: windows-latest
-            platform: windows
-            python-version: "3.13"
-            cibw_build: cp39-win_amd64 cp310-win_amd64 cp311-win_amd64 cp312-win_amd64 cp313-win_amd64 cp314-win_amd64
-            cibw_skip: ""
-            cibw_image: ""
-            cibw_repair: ""
+            platform: windows-x64
+            cibw_archs: AMD64
+            cibw_test_skip: ""
+            cibw_build: >-
+              cp39-win_amd64 cp310-win_amd64 cp311-win_amd64
+              cp312-win_amd64 cp313-win_amd64 cp314-win_amd64
+          - os: windows-latest
+            platform: windows-x86
+            cibw_archs: x86
+            cibw_test_skip: ""
+            cibw_build: >-
+              cp39-win32 cp310-win32 cp311-win32
+              cp312-win32 cp313-win32 cp314-win32
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Guanaco and llama.cpp
         uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install cibuildwheel
-        run: |
-          uv pip install --system -U cibuildwheel wheel
-        shell: bash
-
-      - name: Build wheels (CPU only)
+      - name: Build CPU wheels
+        uses: pypa/cibuildwheel@v3.3.1
         env:
           CIBW_BUILD: ${{ matrix.cibw_build }}
-          CIBW_SKIP: ${{ matrix.cibw_skip }}
+          CIBW_ARCHS: ${{ matrix.cibw_archs }}
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_TEST_SKIP: ${{ matrix.cibw_test_skip }}
           CIBW_BUILD_VERBOSITY: 1
-          CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.cibw_image }}
-          CIBW_REPAIR_WHEEL_COMMAND: ${{ matrix.cibw_repair }}
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_MANYLINUX_I686_IMAGE: manylinux_2_28
           CIBW_ENVIRONMENT: >-
-            CMAKE_ARGS="-DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF -DGGML_BLAS=OFF -DGGML_NATIVE=OFF"
-        run: |
-          cibuildwheel --output-dir wheelhouse
-        shell: bash
+            CMAKE_ARGS="-DGGML_CUDA=OFF -DGGML_METAL=OFF
+            -DGGML_VULKAN=OFF -DGGML_BLAS=OFF -DGGML_NATIVE=OFF
+            -DGGML_BACKEND_DL=OFF -DGGML_CPU_ALL_VARIANTS=OFF
+            -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF
+            -DGGML_F16C=OFF -DGGML_SSE42=OFF -DGGML_BMI2=OFF"
+          CIBW_TEST_COMMAND: >-
+            python -c "import importlib.metadata as m; import llama_cpp;
+            assert m.version('guanaco-py') == llama_cpp.__version__;
+            print('guanaco-py', llama_cpp.__version__, 'CPU wheel OK')"
 
-      - name: List built wheels
-        run: |
-          ls -lh wheelhouse/*.whl || dir wheelhouse\*.whl
-        shell: bash
-
-      - name: Upload wheels as artifact
+      - name: Upload CPU wheels
         uses: actions/upload-artifact@v7
         with:
-          name: wheelhouse-${{ matrix.platform }}
+          name: guanaco-py-cpu-${{ matrix.platform }}
           path: wheelhouse/*.whl
+          if-no-files-found: error

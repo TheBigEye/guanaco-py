@@ -1,6 +1,6 @@
 # Contributing to the LLM Wiki
 
-Thank you for helping improve the `llama-cpp-python` LLM Wiki.
+Thank you for helping improve the `guanaco-py` LLM Wiki.
 
 This wiki is maintained with the help of LLMs, but all documentation must stay grounded in the latest source code. The goal is to keep the wiki accurate, practical, and easy to use for both humans and LLM-based documentation workflows.
 
@@ -38,7 +38,7 @@ When contributing documentation:
 
 ## Page Structure
 
-Follow the project wiki schema defined in [`SCHEMA.md`](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/SCHEMA.md).
+Follow the project wiki schema defined in [`SCHEMA.md`](https://github.com/TheBigEye/guanaco-py/blob/main/docs/wiki/SCHEMA.md).
 
 Most pages should be one of the following types:
 
@@ -190,7 +190,7 @@ docs: update wiki schema to v0.3
 
 ## Final Note
 
-The wiki should help users understand the latest `llama-cpp-python` API from the source code itself.
+The wiki should help users understand the latest `guanaco-py` API from the source code itself.
 
 Accuracy is more important than completeness. When in doubt, verify the code first.
 

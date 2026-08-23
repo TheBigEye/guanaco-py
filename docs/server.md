@@ -1,6 +1,6 @@
 # OpenAI Compatible Server
 
-`llama-cpp-python` offers an OpenAI API compatible web server.
+`guanaco-py` offers an OpenAI API compatible web server.
 
 This web server can be used to serve local models and easily connect them to existing clients.
 
@@ -11,7 +11,7 @@ This web server can be used to serve local models and easily connect them to exi
 The server can be installed by running the following command:
 
 ```bash
-pip install llama-cpp-python[server]
+pip install guanaco-py[server]
 ```
 
 ### Running the server
@@ -33,16 +33,36 @@ python3 -m llama_cpp.server --help
 NOTE: All server options are also available as environment variables. For example, `--model` can be set by setting the `MODEL` environment variable.
 
 Check out the server config reference below settings for more information on the available options.
-CLI arguments and environment variables are available for all of the fields defined in [`ServerSettings`](#llama_cpp.server.settings.ServerSettings) and [`ModelSettings`](#llama_cpp.server.settings.ModelSettings) 
+CLI arguments and environment variables are available for all of the fields defined in [`ServerSettings`](#llama_cpp.server.settings.ServerSettings) and [`ModelSettings`](#llama_cpp.server.settings.ModelSettings)
 
 Additionally the server supports configuration check out the [configuration section](#configuration-and-multi-model-support) for more information and examples.
 
+#### Model loading mode
+
+Use `load_mode` to select how the server loads model data. The corresponding
+CLI option is `--load_mode`, the environment variable is `LOAD_MODE`, and a
+multi-model JSON configuration can set `"load_mode"` for each model.
+`use_mmap`, `use_direct_io`, and `use_mlock` are no longer server settings.
+
+| Value | Mode | Description |
+|---:|---|---|
+| `0` | `LLAMA_LOAD_MODE_NONE` | Use no special model-loading mode. |
+| `1` | `LLAMA_LOAD_MODE_MMAP` | Memory-map the model. This is the default. |
+| `2` | `LLAMA_LOAD_MODE_MLOCK` | Keep the loaded model in RAM rather than allowing it to be swapped or compressed. |
+| `3` | `LLAMA_LOAD_MODE_MMAP_MLOCK` | Memory-map the model and keep its mapped pages in RAM. |
+| `4` | `LLAMA_LOAD_MODE_DIRECT_IO` | Use direct I/O when it is available. |
+
+For example, start the server with memory mapping plus memory locking:
+
+```bash
+python3 -m llama_cpp.server --model <model_path> --load_mode 3
+```
 
 ## Guides
 
 ### Code Completion
 
-`llama-cpp-python` supports code completion via GitHub Copilot.
+`guanaco-py` supports code completion via GitHub Copilot.
 
 *NOTE*: Without GPU acceleration this is unlikely to be fast enough to be usable.
 
@@ -71,7 +91,7 @@ Then just update your settings in `.vscode/settings.json` to point to your code 
 
 ### Function Calling
 
-`llama-cpp-python` supports structured function calling based on a JSON schema.
+`guanaco-py` supports structured function calling based on a JSON schema.
 Function calling is completely compatible with the OpenAI function calling API and can be used by connecting with the official OpenAI Python client.
 
 You'll first need to download one of the available function calling models in GGUF format:
@@ -90,7 +110,7 @@ Check out this [example notebook](https://github.com/abetlen/llama-cpp-python/bl
 
 ### Multimodal Models
 
-`llama-cpp-python` supports the llava1.5 family of multi-modal models which allow the language model to
+`guanaco-py` supports the llava1.5 family of multi-modal models which allow the language model to
 read information from both text and images.
 
 You'll first need to download one of the available multi-modal models in GGUF format:
