@@ -107,7 +107,7 @@ jobs:
             git push origin "$tag"
           fi
           gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --title "guanaco-py ${VERSION} (CPU)" --generate-notes
+            gh release create "$tag" --title "v${VERSION}" --generate-notes
           gh release upload "$tag" dist/*.whl --clobber
 
   release-cuda:
@@ -138,7 +138,7 @@ jobs:
             git push origin "$tag"
           fi
           gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --title "guanaco-py ${VERSION} (${{ matrix.cuda }})" --generate-notes
+            gh release create "$tag" --title "v${VERSION}-${{ matrix.cuda }}" --generate-notes
           gh release upload "$tag" dist/*.whl --clobber
 
   pages-index:
