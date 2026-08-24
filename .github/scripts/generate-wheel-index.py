@@ -12,6 +12,7 @@ import re
 PACKAGE = "guanaco-py"
 WHEEL_PREFIX = "guanaco_py"
 REPO_URL = "https://github.com/TheBigEye/guanaco-py"
+ICON_URL = "https://raw.githubusercontent.com/TheBigEye/guanaco-py/main/docs/icon.svg"
 TAG = re.compile(r"^v[^-]+(?:-(cu\d+))?$")
 
 # Clean :D
@@ -60,6 +61,13 @@ nav a:hover {
     font-weight: 600;
     letter-spacing: .08em;
     text-transform: uppercase;
+}
+
+.icon {
+    display: block;
+    width: 8rem;
+    height: 8rem;
+    margin: 0 auto 20px;
 }
 
 h1 {
@@ -166,7 +174,7 @@ PAGE_TEMPLATE = """<!doctype html>
 <body>
     <main>
 {back_link}        <header>
-            <div class="eyebrow">TheBigEye &middot; guanaco-py</div>
+{icon}            <div class="eyebrow">TheBigEye &middot; guanaco-py</div>
             <h1>{title}</h1>
             <p>{intro}</p>
         </header>
@@ -180,16 +188,18 @@ PAGE_TEMPLATE = """<!doctype html>
 """
 
 
-def page(title: str, intro: str, body: str, parent: str | None = None) -> str:
+def page(title: str, intro: str, body: str, parent: str | None = None, show_icon: bool = False) -> str:
     back_link = (
         f'        <nav><a href="{html.escape(parent)}">&larr; Back</a></nav>\n'
         if parent
         else ""
     )
+    icon = f'            <img class="icon" src="{ICON_URL}" alt="">\n' if show_icon else ""
     return PAGE_TEMPLATE.format(
         title=html.escape(title),
         css=CSS,
         back_link=back_link,
+        icon=icon,
         intro=html.escape(intro),
         body=body,
     )
@@ -281,6 +291,7 @@ def generate(source: pathlib.Path, output: pathlib.Path) -> None:
             "guanaco-py",
             "Prebuilt CPU and CUDA wheels for llama.cpp Python bindings.",
             grid(home_cards),
+            show_icon=True,
         ),
         encoding="utf-8",
     )
