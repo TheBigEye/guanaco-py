@@ -65,8 +65,8 @@ nav a:hover {
 
 .icon {
     display: block;
-    width: 8rem;
-    height: 8rem;
+    width: 12rem;
+    height: 12rem;
     margin: 0 auto 20px;
 }
 
