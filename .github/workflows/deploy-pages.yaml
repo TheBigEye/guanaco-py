@@ -36,7 +36,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout index generator
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Read GitHub release assets
         run: gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json

@@ -21,7 +21,7 @@ jobs:
     outputs:
       value: ${{ steps.version.outputs.value }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - id: version
         shell: bash
         run: |
@@ -91,7 +91,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.version.outputs.value }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: guanaco-py-cpu-*
@@ -122,7 +122,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.version.outputs.value }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: guanaco-py-cuda-*-${{ matrix.cuda }}-*
