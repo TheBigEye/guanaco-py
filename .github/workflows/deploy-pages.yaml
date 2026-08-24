@@ -1,0 +1,55 @@
+name: Deploy Pages
+
+# Regenerates and redeploys the GitHub Pages wheel index from the CURRENT
+# GitHub releases, without rebuilding or re-uploading any wheel.
+#
+# Triggers:
+#   - Manually, any time, from the Actions tab ("Run workflow").
+#   - Automatically whenever a release is published, edited, or deleted,
+#     so the index always reflects the latest assets.
+#   - workflow_call, so build-release-publish.yaml can reuse this same
+#     job right after it finishes publishing new wheels.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published, edited, deleted]
+  workflow_call:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: guanaco-pages
+  cancel-in-progress: false
+
+jobs:
+  pages-index:
+    name: Pages · PEP 503
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout index generator
+        uses: actions/checkout@v6
+
+      - name: Read GitHub release assets
+        run: gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json
+
+      - name: Generate styled PEP 503 indexes
+        run: python .github/scripts/generate-wheel-index.py releases.json site
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Upload wheel index site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
