@@ -224,6 +224,17 @@ def order(channel: str) -> tuple[int, int]:
     return (0, 0) if channel == "cpu" else (1, int(match.group(1)) if match else 9999)
 
 
+def wheel_version_key(name: str) -> tuple[int, ...]:
+    """Extract the numeric version from a wheel filename for sorting newest-first.
+
+    Wheel filenames follow {distribution}-{version}-... (PEP 427), so the
+    version is the segment right after the package name.
+    """
+    match = re.match(rf"{re.escape(WHEEL_PREFIX)}-([^-]+)-", name)
+    version = match.group(1) if match else ""
+    return tuple(int(part) for part in re.findall(r"\d+", version)) or (0,)
+
+
 def generate(source: pathlib.Path, output: pathlib.Path) -> None:
     raw = json.loads(source.read_text(encoding="utf-8"))
     pages = raw if not raw or isinstance(raw[0], list) else [raw]
@@ -245,7 +256,10 @@ def generate(source: pathlib.Path, output: pathlib.Path) -> None:
     whl_cards: list[str] = []
     total_wheels = 0
     for channel in sorted(channels, key=order):
+        # Alphabetical first for a stable secondary order (e.g. platform tag),
+        # then re-sort by version descending so the newest release is on top.
         assets = sorted(channels[channel])
+        assets.sort(key=lambda item: wheel_version_key(item[0]), reverse=True)
         total_wheels += len(assets)
         label = "CPU" if channel == "cpu" else f"CUDA {channel[2:-1]}.{channel[-1]}"
         whl_cards.append(card(f"{channel}/", label, f"{len(assets)} wheel(s)"))
