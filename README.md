@@ -95,6 +95,20 @@ pip install guanaco-py --extra-index-url https://thebigeye.github.io/guanaco-py/
 pip install guanaco-py --only-binary=:all: --extra-index-url https://thebigeye.github.io/guanaco-py/whl/cpu/
 ```
 
+**AVX2 wheel (CPU with AVX2)**
+
+A faster, separate channel is published for CPUs that support AVX2 (Intel
+Haswell+, AMD Excavator+/Zen+, e.g. the Athlon 3000G). It coexists with the
+portable `cpu` wheels; choose one channel or the other, not both.
+
+> [!WARNING]
+> These wheels require an **AVX2** CPU. They will not run on older processors
+> without AVX2 (illegal-instruction crash on the first inference).
+
+```bash
+pip install guanaco-py --extra-index-url https://thebigeye.github.io/guanaco-py/whl/avx2
+```
+
 ### Installation Configuration
 
 `llama.cpp` supports a number of hardware acceleration backends to speed up inference as well as backend specific options. See the [llama.cpp build docs](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) for a full list.

@@ -13,7 +13,7 @@ PACKAGE = "guanaco-py"
 WHEEL_PREFIX = "guanaco_py"
 REPO_URL = "https://github.com/TheBigEye/guanaco-py"
 ICON_URL = "https://raw.githubusercontent.com/TheBigEye/guanaco-py/main/docs/icon.svg"
-TAG = re.compile(r"^v[^-]+(?:-(cu\d+))?$")
+TAG = re.compile(r"^v[^-]+(?:-(cu\d+|avx2))?$")
 
 # Clean :D
 CSS = """
@@ -220,8 +220,13 @@ def grid(cards: list[str]) -> str:
 
 
 def order(channel: str) -> tuple[int, int]:
+    """Sort channels: CPU (portable), then CPU (AVX2), then CUDA by version."""
+    if channel == "cpu":
+        return (0, 0)
+    if channel == "avx2":
+        return (1, 0)
     match = re.fullmatch(r"cu(\d+)", channel)
-    return (0, 0) if channel == "cpu" else (1, int(match.group(1)) if match else 9999)
+    return (2, int(match.group(1)) if match else 9999)
 
 
 def wheel_version_key(name: str) -> tuple[int, ...]:
@@ -238,7 +243,7 @@ def wheel_version_key(name: str) -> tuple[int, ...]:
 def generate(source: pathlib.Path, output: pathlib.Path) -> None:
     raw = json.loads(source.read_text(encoding="utf-8"))
     pages = raw if not raw or isinstance(raw[0], list) else [raw]
-    channels: dict[str, set[tuple[str, str]]] = {"cpu": set()}
+    channels: dict[str, set[tuple[str, str]]] = {"cpu": set(), "avx2": set()}
     for release in (item for batch in pages for item in batch):
         match = TAG.fullmatch(release.get("tag_name", ""))
         if not match:
@@ -261,7 +266,12 @@ def generate(source: pathlib.Path, output: pathlib.Path) -> None:
         assets = sorted(channels[channel])
         assets.sort(key=lambda item: wheel_version_key(item[0]), reverse=True)
         total_wheels += len(assets)
-        label = "CPU" if channel == "cpu" else f"CUDA {channel[2:-1]}.{channel[-1]}"
+        if channel == "cpu":
+            label = "CPU (portable)"
+        elif channel == "avx2":
+            label = "CPU (AVX2)"
+        else:
+            label = f"CUDA {channel[2:-1]}.{channel[-1]}"
         whl_cards.append(card(f"{channel}/", label, f"{len(assets)} wheel(s)"))
 
         channel_dir, project_dir = root / channel, root / channel / PACKAGE
@@ -289,7 +299,12 @@ def generate(source: pathlib.Path, output: pathlib.Path) -> None:
         )
 
     (root / "index.html").write_text(
-        page("Wheel index", "Choose CPU or a CUDA build.", grid(whl_cards), "../"),
+        page(
+            "Wheel index",
+            "Choose CPU (portable), CPU (AVX2) or a CUDA build.",
+            grid(whl_cards),
+            "../",
+        ),
         encoding="utf-8",
     )
 
@@ -303,7 +318,7 @@ def generate(source: pathlib.Path, output: pathlib.Path) -> None:
     (output / "index.html").write_text(
         page(
             "guanaco-py",
-            "Prebuilt CPU and CUDA wheels for llama.cpp Python bindings.",
+            "Prebuilt CPU (portable), CPU (AVX2) and CUDA wheels for llama.cpp Python bindings.",
             grid(home_cards),
             show_icon=True,
         ),

@@ -30,9 +30,14 @@ jobs:
           echo "value=$value" >> "$GITHUB_OUTPUT"
 
   cpu:
-    name: CPU
+    name: CPU (portable)
     needs: version
     uses: ./.github/workflows/build-wheel-cpu.yml
+
+  avx2:
+    name: CPU · AVX2
+    needs: version
+    uses: ./.github/workflows/build-wheel-avx2.yml
 
   cuda-121:
     name: CUDA 12.1
@@ -110,6 +115,33 @@ jobs:
             gh release create "$tag" --title "v${VERSION}" --generate-notes
           gh release upload "$tag" dist/*.whl --clobber
 
+  release-avx2:
+    name: Release · CPU AVX2
+    needs: [version, avx2]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: guanaco-py-avx2-*
+          path: dist
+          merge-multiple: true
+      - name: Create or update AVX2 release
+        shell: bash
+        run: |
+          tag="v${VERSION}-avx2"
+          git fetch --tags --force
+          if ! git rev-parse "$tag" >/dev/null 2>&1; then
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "$tag"
+          fi
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "v${VERSION}-avx2" --generate-notes
+          gh release upload "$tag" dist/*.whl --clobber
+
   release-cuda:
     name: Release · ${{ matrix.cuda }}
     needs: [version, cuda-121, cuda-122, cuda-123, cuda-124, cuda-126, cuda-128, cuda-131]
@@ -143,7 +175,7 @@ jobs:
 
   pages-index:
     name: Pages · PEP 503
-    needs: [release-cpu, release-cuda]
+    needs: [release-cpu, release-avx2, release-cuda]
     uses: ./.github/workflows/deploy-pages.yaml
     permissions:
       contents: read
