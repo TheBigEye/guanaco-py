@@ -2002,6 +2002,28 @@ class Llama:
                                     f"remaining {len(tokens)} prompt tokens to eval",
                                     file=sys.stderr,
                                 )
+                    else:
+                        # TODO: Test properly this before 0.5.6 !!!
+                        # longest_prefix == self.n_tokens: the evaluated context is
+                        # already an exact prefix of the new prompt. This is the
+                        # NORMAL case in a back-and-forth chat (the previous turn's
+                        # tokens re-tokenize byte-identically), and it is not a
+                        # truncation case - there is nothing to remove from the KV.
+                        # But the matched prefix MUST still be dropped from the
+                        # pending tokens, or the entire prompt is evaluated again on
+                        # top of itself: every such turn pays a full prefill of the
+                        # whole conversation AND leaves the KV cache holding the
+                        # conversation twice. That duplication also inflates
+                        # n_tokens toward n_ctx, eventually triggering context
+                        # shifts. This was the multi-turn performance regression.
+                        self.n_tokens = longest_prefix
+                        tokens = tokens[longest_prefix:]
+                        if self.verbose:
+                            print(
+                                f"Llama.generate: {longest_prefix} prefix-match hit "
+                                f"(exact prefix), remaining {len(tokens)} prompt tokens to eval",
+                                file=sys.stderr,
+                            )
         if reset:
             # No prefix matched at all. Completely clear the KV cache to prevent context poisoning.
             self.reset()
