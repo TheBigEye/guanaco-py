@@ -56,6 +56,8 @@ jobs:
       - name: Download model if not cached
         # Only run this step if the cache was not found
         if: steps.model-cache.outputs.cache-hit != 'true'
+        env:
+          UV_NO_LINK_MODE: copy
         run: |
           uv pip install --system huggingface-hub
           hf download ${{ env.REPO_ID }} ${{ env.MODEL_FILE }}
@@ -66,6 +68,7 @@ jobs:
           CMAKE_ARGS: >-
             -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF
             -DGGML_BLAS=OFF -DGGML_NATIVE=OFF
+          UV_NO_LINK_MODE: copy
         run: uv pip install --system -e .[all] --verbose
         shell: bash
 
