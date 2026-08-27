@@ -1322,6 +1322,10 @@ class Llama:
                 f"memory range [{p0}, {p1})"
             )
 
+    def _limit_speculative_draft_n_max(self, requested: int) -> int:
+        """Keep ``[id_last, draft...]`` within one atomic target batch."""
+        return min(max(0, int(requested)), max(0, self.n_batch - 1))
+
     def _decode_eval_batch(
         self, chunk: Sequence[int], initial_batch_size: int
     ) -> int:
@@ -2187,6 +2191,9 @@ class Llama:
             n_max: int,
         ) -> npt.NDArray[np.intc]:
             assert self.speculative is not None
+            n_max = self._limit_speculative_draft_n_max(n_max)
+            if n_max <= 0:
+                return np.empty(0, dtype=np.intc)
             started = time.perf_counter()
             try:
                 result = self.speculative.draft(
@@ -2272,7 +2279,9 @@ class Llama:
                     if self.is_hybrid:
                         use_native_speculative_rollback = (
                             self._ctx.n_rs_seq() >= n_drafted
-                            and self.speculative.supports_native_target_rollback()
+                            # The target capacity check above and the engine's
+                            # ability to realign its own state are independent.
+                            and self.speculative.can_follow_target_native_rollback()
                         )
                         if not use_native_speculative_rollback:
                             if (
