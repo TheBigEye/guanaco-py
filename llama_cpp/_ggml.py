@@ -31,10 +31,6 @@ def _preload_openmp_runtime():
     if os.name != "nt":
         return
 
-    # Keep compatibility with older package versions.
-    if not _version_at_least("0.3.39"):
-        return
-
     # Some ComfyUI environments include complex software packages and may also contain
     # additional OpenMP libraries (such as `libiomp5md.dll`);
     # the best approach is to delete the conflicting libraries
