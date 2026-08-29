@@ -174,7 +174,8 @@ class LlamaRAMCache(BaseLlamaCache):
     def __setitem__(self, key: Sequence[int], value: "llama_core.LlamaState"):
         key = tuple(key)
         if key in self.cache_state:
-            del self.cache_state[key]
+            previous = self.cache_state.pop(key)
+            self._current_size -= previous.llama_state_size
 
         self.cache_state[key] = value
         self._current_size += value.llama_state_size
@@ -686,7 +687,6 @@ class HybridCheckpointCache(BaseLlamaCache):
         pos_min = self._memory_seq_pos_min(memory, seq_id)
         pos_max = self._memory_seq_pos_max(memory, seq_id)
 
-
         # 3. Store the newly extracted checkpoint
         self.checkpoints.append(HybridCheckpoint(
             pos=current_pos,
@@ -776,7 +776,6 @@ class HybridCheckpointCache(BaseLlamaCache):
                     f"failed to remove memory suffix from position {suffix_start}",
                     file=sys.stderr,
                 )
-
 
         if self.verbose:
             mode = "device" if self.on_device else "host"

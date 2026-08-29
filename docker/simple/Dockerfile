@@ -26,7 +26,7 @@ RUN python3 -m pip install --upgrade pip
 
 RUN python3 -m pip install --upgrade pip pytest cmake scikit-build setuptools fastapi uvicorn sse-starlette pydantic-settings starlette-context
 
-RUN pip install llama-cpp-python --verbose;
+RUN pip install guanaco-py --verbose;
 
 # Set environment variable for the host
 ENV HOST=0.0.0.0

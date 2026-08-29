@@ -233,7 +233,7 @@ class Jinja2ChatFormatter(ChatFormatter):
             {% endgeneration %}
 
         Transformers uses this tag to compute assistant-token masks. In
-        llama-cpp-python chat formatting we only need the final rendered prompt,
+        guanaco-py chat formatting we only need the final rendered prompt,
         so this extension simply removes the tag pair and renders the inner
         content as normal Jinja template content.
 
@@ -286,7 +286,7 @@ class Jinja2ChatFormatter(ChatFormatter):
                 prefix. This mirrors Transformers' `add_generation_prompt`.
             stop_token_ids:
                 Optional token ids that should stop generation when they appear
-                as the last generated token. This is llama-cpp-python specific.
+                as the last generated token. This is guanaco-py specific.
             special_tokens_map:
                 Optional tokenizer special-token map. Some HF templates may
                 reference extra variables such as `pad_token`, `unk_token`,
@@ -398,7 +398,7 @@ class Jinja2ChatFormatter(ChatFormatter):
 
         The method builds the variable context expected by HuggingFace-style
         Jinja chat templates and renders the final prompt string used by
-        llama-cpp-python.
+        guanaco-py.
 
         Template variables provided by default:
             messages:

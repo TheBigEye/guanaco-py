@@ -62,6 +62,74 @@ def test_completion_public_apis_forward_ignore_eos():
 
 
 @pytest.mark.parametrize(
+    ("present_penalty", "presence_penalty", "expected"),
+    [(0.0, 1.5, 1.5), (0.7, 1.5, 0.7)],
+)
+def test_completion_presence_penalty_alias(
+    present_penalty, presence_penalty, expected
+):
+    llm = object.__new__(llama_cpp.Llama)
+    private_calls = []
+
+    def fake_private(**kwargs):
+        private_calls.append(kwargs)
+        yield {"choices": [{"text": "", "finish_reason": "length"}]}
+
+    llm._create_completion = fake_private
+    llama_cpp.Llama.create_completion(
+        llm,
+        [1],
+        present_penalty=present_penalty,
+        presence_penalty=presence_penalty,
+    )
+
+    assert private_calls[0]["present_penalty"] == expected
+
+
+def test_call_forwards_presence_penalty_alias():
+    llm = object.__new__(llama_cpp.Llama)
+    public_calls = []
+
+    def fake_public(**kwargs):
+        public_calls.append(kwargs)
+        return {"choices": [{"text": "", "finish_reason": "length"}]}
+
+    llm.create_completion = fake_public
+    llama_cpp.Llama.__call__(llm, "prompt", presence_penalty=1.5)
+
+    assert public_calls[0]["presence_penalty"] == 1.5
+    assert public_calls[0]["present_penalty"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("present_penalty", "presence_penalty", "expected"),
+    [(0.0, 1.5, 1.5), (0.7, 1.5, 0.7)],
+)
+def test_chat_completion_presence_penalty_alias(
+    present_penalty, presence_penalty, expected
+):
+    llm = object.__new__(llama_cpp.Llama)
+    handler_calls = []
+
+    def fake_handler(**kwargs):
+        handler_calls.append(kwargs)
+        return {"choices": [{"message": {"content": ""}}]}
+
+    llm.chat_handler = fake_handler
+    llm._chat_handlers = {}
+    llm.chat_format = None
+    llama_cpp.Llama.create_chat_completion(
+        llm,
+        messages=[{"role": "user", "content": "Hello"}],
+        present_penalty=present_penalty,
+        presence_penalty=presence_penalty,
+    )
+
+    assert handler_calls[0]["present_penalty"] == expected
+    assert "presence_penalty" not in handler_calls[0]
+
+
+@pytest.mark.parametrize(
     ("ignore_eos", "expected_text", "expected_finish_reason"),
     [(False, "", "stop"), (True, "<eog>", "length")],
 )
@@ -378,6 +446,34 @@ def test_llama_batch_mixed_embeddings_are_copied_contiguously():
         np.testing.assert_array_equal(actual, np.concatenate((first, second)))
         assert batch.batch.n_tokens == 2
         assert [batch.batch.token[i] for i in range(2)] == [10, 11]
+    finally:
+        batch.close()
+
+
+def test_llama_batch_mrope_embeddings_use_four_position_planes():
+    batch = internals.LlamaBatch(
+        n_tokens=3,
+        embd=2,
+        n_seq_max=1,
+        verbose=False,
+    )
+    try:
+        original_pos = ctypes.cast(batch.batch.pos, ctypes.c_void_p).value
+        batch.enable_mrope_positions()
+        expanded_pos = ctypes.cast(batch.batch.pos, ctypes.c_void_p).value
+        batch.add_embeddings_mrope(
+            [1.0, 2.0, 3.0, 4.0],
+            pos_array=[[4, 5], [4, 5], [4, 5], [0, 0]],
+            seq_ids=[0],
+            logits_array=[False, True],
+        )
+
+        assert expanded_pos != original_pos
+        assert [batch.batch.pos[i] for i in range(8)] == [
+            4, 5, 4, 5, 4, 5, 0, 0
+        ]
+        assert [batch.batch.logits[i] for i in range(2)] == [0, 1]
+        assert batch.batch.n_tokens == 2
     finally:
         batch.close()
 

@@ -3,11 +3,11 @@ This is an example implementation of main.cpp from llama.cpp
 Quirks:
  * Its not exactly alike since this port is designed around programmatic I/O
  * Input is always echoed if on, so it should be turned off when using "input()"
- * The first antiprompt should be the userprompt like "\nUser:",
+ * The first antiprompt should be the userprompt like "\nUser:", 
    because its added when n_predict is reached (aka generation ended prematurely)
  * n_predict can be set to -1 for unlimited length responses (or just a really high value)
  * Instruction mode adds its own antiprompt.
-   You should also still be feeding the model with a "primer" prompt that
+   You should also still be feeding the model with a "primer" prompt that 
    shows it the expected format.
 """
 
@@ -390,7 +390,7 @@ n_keep = {self.params.n_keep}
 					if llama_cpp.llama_eval(self.ctx, _arr, n_eval, self.n_past, self.params.n_threads) != 0:
 						print(f"failed to eval")
 						return
-
+					
 					self.n_past += n_eval"""
 
                 if (

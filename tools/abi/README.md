@@ -48,7 +48,7 @@ llama library by content when dependency and backend libraries share the same
 directory.
 
 Artifacts may come from local builds, an installed or extracted wheel,
-[project releases](https://github.com/JamePeng/llama-cpp-python/releases), or
+[project releases](https://github.com/TheBigEye/guanaco-py/releases), or
 [upstream releases](https://github.com/ggml-org/llama.cpp/releases). Record
 the source revision, compiler, architecture, and build options. Upstream
 artifacts may not contain fork-only `llama_ext` APIs.

@@ -121,6 +121,7 @@ class Llama:
         n_cpu_moe: int = 0,
         split_mode: int = llama_cpp_lib.llama_split_mode.LLAMA_SPLIT_MODE_LAYER,
         load_mode: int = llama_cpp_lib.llama_load_mode.LLAMA_LOAD_MODE_AUTO,
+        lazy_mode: int = llama_cpp_lib.llama_lazy_mode.LLAMA_LAZY_MODE_AUTO,
         main_gpu: int = 0,
         tensor_split: Optional[List[float]] = None,
         kv_overrides: Optional[Dict[str, Union[bool, int, float, str]]] = None,
@@ -272,7 +273,7 @@ class Llama:
             logits_all: Return logits for all tokens, not just the last token. Must be True for completion to return logprobs.
             embeddings: Embedding mode only. if true, extract embeddings (together with logits)
             offload_kqv: Offload K, Q, V to GPU.
-            no_perf: Measure performance timings.
+            no_perf: Disable performance timing collection.
             op_offload: whether to offload host tensor operations to device
             swa_full: whether to use full-size SWA cache
             kv_unified: use single unified KV buffer for the KV cache of all sequences
@@ -408,6 +409,7 @@ class Llama:
         self.model_params.n_gpu_layers = self._parse_n_gpu_layers(n_gpu_layers)
         self.model_params.split_mode = split_mode
         self.model_params.load_mode = load_mode
+        self.model_params.lazy_mode = lazy_mode
         self.model_params.main_gpu = main_gpu
         self.tensor_split = tensor_split
         self._c_tensor_split = None
@@ -2108,7 +2110,7 @@ class Llama:
                                     file=sys.stderr,
                                 )
                     else:
-                        # TODO: Test properly this before 0.5.6 !!!
+                        # TODO: Check if this is still actually valid later
                         # longest_prefix == self.n_tokens: the evaluated context is
                         # already an exact prefix of the new prompt. This is the
                         # NORMAL case in a back-and-forth chat (the previous turn's
@@ -3040,9 +3042,6 @@ class Llama:
                 return values
             return ((array / norm) * scale).tolist()
 
-        if self.verbose:
-            llama_cpp_lib.llama_perf_context_reset(ctx)
-
         if isinstance(input, str):
             inputs: List[Union[str, List[int]]] = (
                 input.split(separator) if separator is not None else [input]
@@ -3056,6 +3055,10 @@ class Llama:
         llama_cpp_lib.llama_memory_clear(
             llama_cpp_lib.llama_get_memory(ctx), True
         )
+
+        perf_enabled = not self.context_params.no_perf
+        if perf_enabled:
+            self._ctx.reset_timings()
 
         data: List[Any] = []
         seq_sizes: List[int] = []
@@ -3155,8 +3158,8 @@ class Llama:
 
         decode_batch()
 
-        if self.verbose:
-            llama_cpp_lib.llama_perf_context_print(ctx)
+        if self.verbose and perf_enabled:
+            self._ctx.print_timings()
 
         output = data[0] if is_single else data
         self.reset()
@@ -3315,9 +3318,6 @@ class Llama:
                 f'Detected duplicate leading "{self._model.token_get_text(self.token_bos())}" in prompt, this will likely reduce response quality, consider removing it...',
                 RuntimeWarning,
             )
-
-        if self.verbose:
-            self._ctx.reset_timings()
 
         if len(prompt_tokens) >= self._n_ctx:
             raise ValueError(
@@ -3610,9 +3610,6 @@ class Llama:
             text = self.detokenize(completion_tokens, prev_tokens=prompt_tokens)
             finish_reason = "abort"
 
-        if self.verbose:
-            self._ctx.print_timings()
-
         if stream:
             remaining_tokens = completion_tokens[returned_tokens:]
             remaining_text = self.detokenize(
@@ -3849,6 +3846,7 @@ class Llama:
         stop: Optional[Union[str, List[str]]] = [],
         frequency_penalty: float = 0.0,
         present_penalty: float = 0.0,
+        presence_penalty: Optional[float] = None,
         repeat_penalty: float = 1.0,
         penalty_last_n: int = 64,
         top_k: int = 40,
@@ -3903,6 +3901,7 @@ prompt: The prompt to generate text from.
             stop: A list of strings to stop generation when encountered.
             frequency_penalty: The penalty to apply to tokens based on their frequency in the prompt.
             present_penalty: The penalty to controls whether to apply a penalty to tokens that are already present in the current context, helping to reduce repetition and encourage more diverse generation.
+            presence_penalty: Compatibility alias for `present_penalty`. It is used only when `present_penalty` remains at its default value.
             repeat_penalty: The penalty to apply to repeated tokens.
             penalty_last_n: last n tokens to penalize (0 = disable penalty, -1 = context size).
             top_k: The top-k value to use for sampling. Top-K sampling described in academic paper "The Curious Case of Neural Text Degeneration" https://arxiv.org/abs/1904.09751
@@ -3956,6 +3955,9 @@ prompt: The prompt to generate text from.
         Returns:
             Response object containing the generated text.
         """
+        if presence_penalty is not None and present_penalty == 0.0:
+            present_penalty = presence_penalty
+
         completion_or_chunks = self._create_completion(
             prompt=prompt,
             suffix=suffix,
@@ -4007,11 +4009,39 @@ prompt: The prompt to generate text from.
             reasoning_start_in_prompt=reasoning_start_in_prompt,
             reasoning_start_max_tokens=reasoning_start_max_tokens,
         )
+
+        # Keep the native counters request-scoped even when verbose logging is
+        # disabled. The wrapper also guarantees that an abandoned streaming
+        # iterator prints its partial timings when it is explicitly closed.
+        perf_enabled = (
+            hasattr(self, "_ctx")
+            and not getattr(getattr(self, "context_params", None), "no_perf", False)
+        )
+        if perf_enabled:
+            raw_chunks = completion_or_chunks
+
+            def timed_chunks() -> Iterator[
+                Union[CreateCompletionResponse, CreateCompletionStreamResponse]
+            ]:
+                self._ctx.reset_timings()
+                try:
+                    yield from raw_chunks
+                finally:
+                    if self.verbose:
+                        self._ctx.print_timings()
+
+            completion_or_chunks = timed_chunks()
+
         if stream:
             chunks: Iterator[CreateCompletionStreamResponse] = completion_or_chunks
             return chunks
-        completion: Completion = next(completion_or_chunks)  # type: ignore
-        return completion
+        try:
+            completion: Completion = next(completion_or_chunks)  # type: ignore
+            return completion
+        finally:
+            close = getattr(completion_or_chunks, "close", None)
+            if close is not None:
+                close()
 
     def __call__(
         self,
@@ -4027,6 +4057,7 @@ prompt: The prompt to generate text from.
         stop: Optional[Union[str, List[str]]] = [],
         frequency_penalty: float = 0.0,
         present_penalty: float = 0.0,
+        presence_penalty: Optional[float] = None,
         repeat_penalty: float = 1.0,
         penalty_last_n: int = 64,
         top_k: int = 40,
@@ -4081,6 +4112,7 @@ prompt: The prompt to generate text from.
             stop: A list of strings to stop generation when encountered.
             frequency_penalty: The penalty to apply to tokens based on their frequency in the prompt.
             present_penalty: The penalty to controls whether to apply a penalty to tokens that are already present in the current context, helping to reduce repetition and encourage more diverse generation.
+            presence_penalty: Compatibility alias for `present_penalty`. It is used only when `present_penalty` remains at its default value.
             repeat_penalty: The penalty to apply to repeated tokens.
             penalty_last_n: last n tokens to penalize (0 = disable penalty, -1 = context size).
             top_k: The top-k value to use for sampling. Top-K sampling described in academic paper "The Curious Case of Neural Text Degeneration" https://arxiv.org/abs/1904.09751
@@ -4184,6 +4216,7 @@ prompt: The prompt to generate text from.
             reasoning_budget_message=reasoning_budget_message,
             reasoning_start_in_prompt=reasoning_start_in_prompt,
             reasoning_start_max_tokens=reasoning_start_max_tokens,
+            presence_penalty=presence_penalty,
         )
 
     def create_chat_completion(
@@ -4205,6 +4238,7 @@ prompt: The prompt to generate text from.
         response_format: Optional[ChatCompletionRequestResponseFormat] = None,
         max_tokens: Optional[int] = None,
         present_penalty: float = 0.0,
+        presence_penalty: Optional[float] = None,
         frequency_penalty: float = 0.0,
         repeat_penalty: float = 1.0,
         penalty_last_n: int = 64,
@@ -4266,6 +4300,7 @@ prompt: The prompt to generate text from.
             max_tokens: The maximum number of tokens to generate. If max_tokens <= 0 or None, the maximum number of tokens to generate is unlimited and depends on n_ctx.
             frequency_penalty: The penalty to apply to tokens based on their frequency in the prompt.
             present_penalty: The penalty to controls whether to apply a penalty to tokens that are already present in the current context, helping to reduce repetition and encourage more diverse generation.
+            presence_penalty: Compatibility alias for `present_penalty`. It is used only when `present_penalty` remains at its default value.
             repeat_penalty: The penalty to apply to repeated tokens.
             penalty_last_n: last n tokens to penalize (0 = disable penalty, -1 = context size).
             mirostat_mode: The mirostat sampling mode.
@@ -4309,6 +4344,9 @@ prompt: The prompt to generate text from.
         Returns:
             Generated chat completion or a stream of chat completion chunks.
         """
+        if presence_penalty is not None and present_penalty == 0.0:
+            present_penalty = presence_penalty
+
         handler = (
             self.chat_handler
             or self._chat_handlers.get(self.chat_format)
@@ -4413,6 +4451,7 @@ prompt: The prompt to generate text from.
             n_cpu_moe=self.n_cpu_moe,
             split_mode=self.model_params.split_mode,
             load_mode=self.model_params.load_mode,
+            lazy_mode=self.model_params.lazy_mode,
             main_gpu=self.model_params.main_gpu,
             tensor_split=self.tensor_split,
             kv_overrides=self.kv_overrides,

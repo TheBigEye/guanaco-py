@@ -83,7 +83,7 @@ test:
 	python3 -m pytest --full-trace -v
 
 docker:
-	docker build -t llama-cpp-python:latest -f docker/simple/Dockerfile .
+	docker build -t guanaco-py:latest -f docker/simple/Dockerfile .
 
 run-server:
 	python3 -m llama_cpp.server --model ${MODEL}

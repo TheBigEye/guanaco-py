@@ -7,7 +7,7 @@ FROM ${IMAGE}
 # Re-declare the ARG after FROM
 ARG IMAGE
 
-# Update and upgrade the existing packages 
+# Update and upgrade the existing packages
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
@@ -23,10 +23,10 @@ RUN echo "Image: ${IMAGE}" && \
     if [ "${IMAGE}" = "python:3-slim-bookworm" ] ; then \
     echo "OpenBLAS install:" && \
     apt-get install -y --no-install-recommends libopenblas-dev && \
-    CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install llama-cpp-python --verbose; \
+    CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install guanaco-py --verbose; \
 else \
     echo "CuBLAS install:" && \
-    CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --verbose; \
+    CMAKE_ARGS="-DGGML_CUDA=on" pip install guanaco-py --verbose; \
 fi
 
 # Clean up apt cache

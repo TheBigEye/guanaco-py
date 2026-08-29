@@ -6,6 +6,7 @@ import pytest
 
 import llama_cpp
 from llama_cpp import llama_cpp as llama_cpp_lib
+from llama_cpp import _internals as internals
 
 from llama_cpp.llama_speculative import (
     LlamaDFlashDecoding,
@@ -29,6 +30,84 @@ def test_spec_engine_is_the_public_base_class():
     assert LlamaMTPDecoding._candidate is LlamaDFlashDecoding._candidate
     assert "_copy_rows" not in LlamaDFlashDecoding.__dict__
     assert "_candidate" not in LlamaDFlashDecoding.__dict__
+
+
+def test_llama_context_wraps_backend_sampling_and_perf(monkeypatch):
+    context = object.__new__(internals.LlamaContext)
+    context.ctx = "native-context"
+    context._sampler_refs = {}
+    sampler = type("Sampler", (), {"sampler": "native-sampler"})()
+    calls = []
+
+    monkeypatch.setattr(
+        internals.llama_cpp,
+        "llama_set_sampler",
+        lambda ctx, seq_id, ptr: calls.append(("set", ctx, seq_id, ptr)) or True,
+    )
+    assert context.set_sampler(2, sampler)
+    assert context._sampler_refs[2] is sampler
+    assert context.set_sampler(2, None)
+    assert 2 not in context._sampler_refs
+
+    pointer_results = {
+        "llama_get_sampled_probs_ith": object(),
+        "llama_get_sampled_logits_ith": object(),
+        "llama_get_sampled_candidates_ith": object(),
+    }
+    scalar_results = {
+        "llama_get_sampled_token_ith": 17,
+        "llama_get_sampled_probs_count_ith": 3,
+        "llama_get_sampled_logits_count_ith": 4,
+        "llama_get_sampled_candidates_count_ith": 5,
+    }
+    for name, result in {**pointer_results, **scalar_results}.items():
+        monkeypatch.setattr(
+            internals.llama_cpp,
+            name,
+            lambda ctx, index, result=result, name=name: (
+                calls.append((name, ctx, index)) or result
+            ),
+        )
+
+    assert context.get_sampled_token_ith(-1) == 17
+    assert context.get_sampled_probs_count_ith(-1) == 3
+    assert context.get_sampled_logits_count_ith(-1) == 4
+    assert context.get_sampled_candidates_count_ith(-1) == 5
+    assert (
+        context.get_sampled_probs_ith(-1)
+        is pointer_results["llama_get_sampled_probs_ith"]
+    )
+    assert (
+        context.get_sampled_logits_ith(-1)
+        is pointer_results["llama_get_sampled_logits_ith"]
+    )
+    assert (
+        context.get_sampled_candidates_ith(-1)
+        is pointer_results["llama_get_sampled_candidates_ith"]
+    )
+
+    perf = llama_cpp_lib.llama_perf_context_data()
+    perf.n_eval = 9
+    monkeypatch.setattr(
+        internals.llama_cpp, "llama_perf_context", lambda ctx: perf
+    )
+    monkeypatch.setattr(
+        internals.llama_cpp,
+        "llama_perf_context_print",
+        lambda ctx: calls.append(("perf-print", ctx)),
+    )
+    monkeypatch.setattr(
+        internals.llama_cpp,
+        "llama_perf_context_reset",
+        lambda ctx: calls.append(("perf-reset", ctx)),
+    )
+
+    assert context.perf_context().n_eval == 9
+    context.print_timings()
+    context.reset_timings()
+    assert ("perf-print", "native-context") in calls
+    assert ("perf-reset", "native-context") in calls
+    context.ctx = None
 
 
 def test_ngram_map_lifecycle_and_acceptance_feedback():
@@ -307,27 +386,23 @@ def test_mtp_native_verification_rollback_removes_only_rejected_suffix():
 
 
 def test_mtp_close_does_not_import_during_interpreter_shutdown():
-    class _NativeAPI:
-        def __init__(self):
-            self.detached = False
-
-        def llama_set_sampler(self, context, seq_id, sampler):
-            assert context == "draft-context"
-            assert seq_id == 0
-            assert sampler is None
-            self.detached = True
-
     class _Closable:
         def __init__(self, *, context=None):
             self.ctx = context
             self.closed = False
+            self.sampler_changes = []
+
+        def set_sampler(self, seq_id, sampler):
+            assert self.ctx == "draft-context"
+            self.sampler_changes.append((seq_id, sampler))
+            return True
 
         def close(self):
             self.closed = True
 
     engine = object.__new__(LlamaMTPDecoding)
     engine._closed = False
-    engine._llama_cpp_lib = _NativeAPI()
+    engine._llama_cpp_lib = object()
     engine._backend_sampler = _Closable()
     engine._backend_sampling = True
     engine.batch = _Closable()
@@ -349,7 +424,7 @@ def test_mtp_close_does_not_import_during_interpreter_shutdown():
     finally:
         builtins.__import__ = original_import
 
-    assert engine._llama_cpp_lib.detached
+    assert draft_context.sampler_changes == [(0, None)]
     assert backend_sampler.closed
     assert batch.closed
     assert draft_context.closed
@@ -687,12 +762,14 @@ class _FakeDFlashBatch:
         self.positions = []
         self.embeddings = None
         self.logits = []
+        self.mrope_positions = None
 
     def reset(self):
         self.tokens = []
         self.positions = []
         self.embeddings = None
         self.logits = []
+        self.mrope_positions = None
 
     def add_sequence(
         self, token_array, pos_array, seq_ids, logits_array
@@ -701,6 +778,7 @@ class _FakeDFlashBatch:
         assert len(token_array) == len(pos_array) == len(logits_array)
         self.tokens = list(token_array)
         self.positions = list(pos_array)
+        self.logits = list(logits_array)
 
     def add_embeddings(
         self, embeddings, *, pos_array, seq_ids, logits_array=None
@@ -709,6 +787,17 @@ class _FakeDFlashBatch:
         self.embeddings = np.asarray(embeddings, dtype=np.float32).copy()
         self.positions = list(pos_array)
         self.logits = list(logits_array or [])
+
+    def add_embeddings_mrope(
+        self, embeddings, *, pos_array, seq_ids, logits_array=None
+    ):
+        self.add_embeddings(
+            embeddings,
+            pos_array=pos_array[0],
+            seq_ids=seq_ids,
+            logits_array=logits_array,
+        )
+        self.mrope_positions = [list(plane) for plane in pos_array]
 
 
 class _FakeDFlashDraftContext:
@@ -759,6 +848,8 @@ def _draft_test_dflash_engine(*, dspark, sample_from_anchor, p_min=0.0):
         draft_p_min=p_min,
     )
     engine.is_dspark = dspark
+    engine.is_dflash2 = False
+    engine.selector_top_k = 0
     engine.sample_from_anchor = sample_from_anchor
     engine.draft_limit = 3
     engine.mask_token_id = 99
@@ -781,6 +872,7 @@ def test_dflash_builds_anchor_plus_mask_block_and_reads_mask_outputs():
 
     assert engine.noise_batch.tokens == [42, 99, 99, 99]
     assert engine.noise_batch.positions == [7, 8, 9, 10]
+    assert engine.noise_batch.logits == [True, True, True, True]
     assert result.tolist() == [101, 102, 103]
     assert engine._pending_verification_checkpoint == {"position": 5}
 
@@ -798,6 +890,100 @@ def test_dspark_anchor_layout_uses_confidence_to_truncate_block():
 
     assert engine.noise_batch.tokens == [42, 99, 99]
     assert result.tolist() == [100]
+
+
+def test_dflash2_walks_selector_lattice_without_requesting_logits():
+    engine = _draft_test_dflash_engine(
+        dspark=False, sample_from_anchor=True, p_min=0.0
+    )
+    engine.is_dflash2 = True
+    engine.selector_top_k = 2
+    engine.n_embd_dec = 6
+    lattice = np.asarray(
+        [
+            [0, 0, 0, 0, 0, 0],
+            [101, 102, 0, 2, 0, 2],
+            [201, 202, 0, 0, 3, 1],
+            [301, 302, 0, 4, 0, 0],
+        ],
+        dtype=np.float32,
+    )
+    engine.draft_context = _FakeDFlashDraftContext(confidence=lattice)
+
+    result = engine.draft([], n_past=7, id_last=42, n_max=3)
+
+    assert engine.noise_batch.tokens == [42, 99, 99, 99]
+    assert engine.noise_batch.logits == [False, False, False, False]
+    assert result.tolist() == [102, 201, 302]
+    assert engine._pending_verification_checkpoint == {"position": 5}
+
+
+def test_dflash2_selector_probability_truncates_before_low_confidence_token():
+    engine = _draft_test_dflash_engine(
+        dspark=False, sample_from_anchor=True, p_min=0.8
+    )
+    engine.is_dflash2 = True
+    engine.selector_top_k = 2
+    engine.n_embd_dec = 6
+    lattice = np.asarray(
+        [
+            [0, 0, 0, 0, 0, 0],
+            [101, 102, 0, 3, 0, 3],
+            [201, 202, 0, 0, 0, 1],
+            [301, 302, 0, 0, 0, 0],
+        ],
+        dtype=np.float32,
+    )
+    engine.draft_context = _FakeDFlashDraftContext(confidence=lattice)
+
+    result = engine.draft([], n_past=7, id_last=42, n_max=3)
+
+    assert result.tolist() == [102]
+
+
+@pytest.mark.parametrize(
+    ("is_dflash2", "expected_masked", "expected_backend_calls"),
+    [(False, True, 1), (True, False, 0)],
+)
+def test_dflash2_configures_unmasked_nextn_without_backend_sampling(
+    is_dflash2, expected_masked, expected_backend_calls
+):
+    engine = object.__new__(LlamaDFlashDecoding)
+    engine.is_dflash2 = is_dflash2
+    engine.target_layer_ids = [2, 5]
+    backend_calls = []
+    engine._enable_backend_sampling = lambda internals: backend_calls.append(
+        internals
+    )
+
+    class _TargetContext:
+        def __init__(self):
+            self.layers = []
+
+        def set_embeddings_layer_inp(self, layer_id, enabled):
+            self.layers.append((layer_id, enabled))
+
+    class _DraftContext:
+        def __init__(self):
+            self.nextn = []
+            self.causal = []
+
+        def set_embeddings_nextn(self, enabled, masked):
+            self.nextn.append((enabled, masked))
+
+        def set_causal_attn(self, enabled):
+            self.causal.append(enabled)
+
+    engine.target_context = _TargetContext()
+    engine.draft_context = _DraftContext()
+    internals = object()
+
+    engine._configure_draft_execution(internals)
+
+    assert len(backend_calls) == expected_backend_calls
+    assert engine.target_context.layers == [(2, True), (5, True)]
+    assert engine.draft_context.nextn == [(True, expected_masked)]
+    assert engine.draft_context.causal == [False]
 
 
 def test_dflash_process_interleaves_target_layers_and_injects_fused_rows():
@@ -822,6 +1008,7 @@ def test_dflash_process_interleaves_target_layers_and_injects_fused_rows():
     engine.encoder_batch = _FakeDFlashBatch()
     engine.inject_batch = _FakeDFlashBatch()
     engine.verify_positions = []
+    engine.is_mrope = False
 
     class _TargetBatch:
         n_tokens = 2
@@ -845,6 +1032,45 @@ def test_dflash_process_interleaves_target_layers_and_injects_fused_rows():
     assert engine.verify_positions == [4, 5]
     assert engine.encoder_batch.logits == [True, True]
     assert engine.inject_batch.logits == []
+
+
+def test_dflash_mrope_process_uses_target_positions_for_encoder_and_injection():
+    engine = object.__new__(LlamaDFlashDecoding)
+    engine.target_layer_ids = [1]
+    engine.n_embd_tgt = 2
+    engine.n_embd_enc = 2
+    engine.n_embd_dec = 2
+    engine.is_mrope = True
+    target_rows = np.asarray([[1, 2], [3, 4]], dtype=np.float32)
+
+    class _TargetContext:
+        def get_embeddings_layer_inp(self, layer_id):
+            assert layer_id == 1
+            return target_rows.ctypes.data_as(
+                ctypes.POINTER(ctypes.c_float)
+            )
+
+    fused = np.asarray([[5, 6], [7, 8]], dtype=np.float32)
+    engine.target_context = _TargetContext()
+    engine.draft_context = _FakeDFlashDraftContext(fused=fused)
+    engine.encoder_batch = _FakeDFlashBatch()
+    engine.inject_batch = _FakeDFlashBatch()
+    engine.verify_positions = []
+
+    class _TargetBatch:
+        n_tokens = 2
+        token = [11, 12]
+        embd = None
+        pos = [4, 5]
+        n_seq_id = [1, 1]
+        seq_id = [[0], [0]]
+
+    engine.process(_TargetBatch())
+
+    expected = [[4, 5], [4, 5], [4, 5], [0, 0]]
+    assert engine.encoder_batch.mrope_positions == expected
+    assert engine.inject_batch.mrope_positions == expected
+    assert engine.verify_positions == [4, 5]
 
 
 def test_dflash_rejects_multimodal_embedding_batches_until_positions_are_mapped():
