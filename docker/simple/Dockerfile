@@ -26,7 +26,10 @@ RUN python3 -m pip install --upgrade pip
 
 RUN python3 -m pip install --upgrade pip pytest cmake scikit-build setuptools fastapi uvicorn sse-starlette pydantic-settings starlette-context
 
-RUN pip install guanaco-py --verbose;
+# Install guanaco-py from this checkout.
+# NOTE: guanaco-py is not on PyPI, it must be built from this tree,
+# which `actions/checkout` already fetched with submodules: recursive.
+RUN pip install . --verbose
 
 # Set environment variable for the host
 ENV HOST=0.0.0.0

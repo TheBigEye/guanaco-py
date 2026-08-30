@@ -32,11 +32,9 @@ ENV CUDA_TOOLKIT_ROOT_DIR="/usr/local/cuda/"
 # Install Python build tools and server dependencies
 RUN python3 -m pip install --upgrade pip pytest wheel packaging scikit-build setuptools fastapi uvicorn pydantic-settings sse-starlette starlette-context huggingface-hub
 
-# Clone the source code. --recursive is CRITICAL to fetch the 'llama.cpp' submodule
-RUN git clone --recursive https://github.com/TheBighEye/guanaco-py.git
-
-# Switch context to the cloned repository directory
-WORKDIR /app/guanaco-py
+# Build from the checkout copied above. The build context must be the repo
+# root with submodules present (clone it with --recursive): guanaco-py is not
+# on PyPI, so `pip install .` compiles it from this tree.
 
 # Install guanaco-py (build with cuda)
 RUN CMAKE_ARGS="-DGGML_CUDA=on -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_DOCKER_ARCH}" pip install .

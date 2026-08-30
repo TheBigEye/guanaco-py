@@ -18,15 +18,21 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 
 RUN python3 -m pip install --upgrade pip pytest cmake scikit-build setuptools fastapi uvicorn sse-starlette pydantic-settings starlette-context
 
+# Copy the source tree into the image first.
+# NOTE: guanaco-py is not on PyPI, it must be installed from this checkout.
+RUN mkdir /app
+WORKDIR /app
+COPY . /app
+
 # Perform the conditional installations based on the image
 RUN echo "Image: ${IMAGE}" && \
     if [ "${IMAGE}" = "python:3-slim-bookworm" ] ; then \
     echo "OpenBLAS install:" && \
     apt-get install -y --no-install-recommends libopenblas-dev && \
-    CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install guanaco-py --verbose; \
+    CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install . --verbose; \
 else \
     echo "CuBLAS install:" && \
-    CMAKE_ARGS="-DGGML_CUDA=on" pip install guanaco-py --verbose; \
+    CMAKE_ARGS="-DGGML_CUDA=on" pip install . --verbose; \
 fi
 
 # Clean up apt cache
