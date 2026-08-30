@@ -2,775 +2,189 @@
   <img src="https://raw.githubusercontent.com/TheBigEye/guanaco-py/main/docs/icon.svg" style="height: 16rem; width: 16rem">
 </p>
 
-#  Python Bindings for [`llama.cpp`](https://github.com/ggerganov/llama.cpp)
+# Guanaco-py - Python Bindings for [`llama.cpp`](https://github.com/ggml-org/llama.cpp)
 
-**Personal maintained fork of the original [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python)**
+**A simplified, wheels-first fork, kept in sync with [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python)**
 
 [![Forked from abetlen/llama-cpp-python](https://img.shields.io/badge/forked%20from-abetlen/llama--cpp--python-blue)](https://github.com/abetlen/llama-cpp-python)
 [![Tests](https://github.com/TheBigEye/guanaco-py/actions/workflows/test.yaml/badge.svg?branch=main)](https://github.com/TheBigEye/guanaco-py/actions/workflows/test.yaml)
 [![Github All Releases](https://img.shields.io/github/downloads/TheBigEye/guanaco-py/total.svg?label=Github%20Downloads)]()
 
-Python bindings for [@ggerganov's](https://github.com/ggerganov) [`llama.cpp`](https://github.com/ggerganov/llama.cpp) library.
-> [!NOTE]
-> This is my **personal fork** of the original `llama-cpp-python` project.
-> The original repository has been largely inactive, and since several of my projects depend on these bindings, I created this fork to:
-> - Provide active maintenance and quick fixes.
-> - Offer pre-built wheels for CPU and CUDA (with a focus on stability and simplicity).
-> - Intentionally limit support to **CPU and CUDA only** (no Metal, no macOS/ARM-specific builds) for better reliability on common server/desktop setups.
-> - Plan future custom enhancements and features that may diverge significantly from the original.
-> If you need Metal, macOS, or broader hardware support, please use the original repository: [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python).
+The bindings you already know `import llama_cpp`, API-compatible with upstream but **prebuilt and ready to install**, including on **pure-CPU machines**, the one configuration upstream does not publish wheels for. Pick the wheel for your hardware, run `pip install`, done: no compiler, no CMake, no rebuilding llama.cpp from source on every machine and every update.
+
+---
+
+## Why this repository exists
+A bit of context on how we got here:
+
+* **[abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python)** - the original project has not had a release since August 2025, while llama.cpp itself moves forward essentially every day.
+* **[JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python)** is currently the only actively maintained continuation of the bindings. **This repository is updated against that upstream**, so it stays current with modern llama.cpp (new chat templates, GGUF changes, performance work, bug fixes).
+* JamePeng's repository, however, ships **no CPU builds**: its releases carry prebuilt wheels for CUDA and other platforms, but if you run on CPU — as every ordinary PC, laptop and shared box does, installing it means having a compiler toolchain on every machine and sitting through a full CMake build on every install or upgrade.
+
+`guanaco-py` exists to simplify exactly that, and deliberately nothing more. This fork's job is:
+
+* **Track JamePeng's upstream**, keeping the bindings current with llama.cpp.
+* **Build and publish prebuilt wheels**, and only for two configurations: **CPU and CUDA**. CPU is the gap upstream leaves; CUDA rides along so wheel users can stick to a single, explicit index instead of mixing sources.
 
 > [!NOTE]
-> This fork also contains changes and improvements from [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python).
+> Support is intentionally limited to **CPU and CUDA** builds (no prebuilt Metal, Vulkan, HIP/ROCm, SYCL, RPC, or macOS/ARM wheels). That narrow focus is not a lack of ambition, it is what keeps the builds tested, reliable and publishable on time instead of rotting across a giant untested matrix. The source tree can still build those backends the same way upstream does; there just won't be prebuilt wheels for them here.
 
-> **Thanks to Andrei Betlen for the original work!**
-
-> [!NOTE]
-> Documentation is currently shared with the original project: [https://llama-cpp-python.readthedocs.io/en/latest](https://llama-cpp-python.readthedocs.io/en/latest). As the project diverges, separate documentation may be created.
-
-**This package provides:**
-- Low-level access to C API via `ctypes` interface.
-- High-level Python API for text completion
-    - OpenAI-like API
-    - [LangChain compatibility](https://python.langchain.com/docs/integrations/llms/llamacpp)
-    - [LlamaIndex compatibility](https://docs.llamaindex.ai/en/stable/examples/llm/llama_2_llama_cpp.html)
-- OpenAI compatible web server
-    - [Local Copilot replacement](https://llama-cpp-python.readthedocs.io/en/latest/server/#code-completion)
-    - [Function Calling support](https://llama-cpp-python.readthedocs.io/en/latest/server/#function-calling)
-    - [Vision API support](https://llama-cpp-python.readthedocs.io/en/latest/server/#multimodal-models)
-    - [Multiple Models](https://llama-cpp-python.readthedocs.io/en/latest/server/#configuration-and-multi-model-support)
-
-Documentation is available at [https://llama-cpp-python.readthedocs.io/en/latest](https://llama-cpp-python.readthedocs.io/en/latest).
+> [!IMPORTANT]
+> If you need Metal, macOS, or other backends beyond CPU/CUDA, use the upstream repositories directly: [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python) (actively maintained) or [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python) (the original). Many thanks to **Andrei Betlen** for the original work!
 
 ## Installation
 
-**Requirements:**
-  - Python 3.9+
-  - C compiler
-      - Linux: GCC or Clang
-      - Windows: Visual Studio or MinGW (MSYS2)
-  - CMake 3.21+
-  - Git
+Wheels are served from a small [PEP 503 index hosted on GitHub Pages](https://thebigeye.github.io/guanaco-py/whl/) - plain PyPI is not, and will never be, an option (see the last section for why).
 
-To install the package, run:
+### Choosing your wheel
+
+Pick **one** channel, the one matching your hardware, and install:
+
+| Hardware | Channel | Index |
+|---|---|---|
+| **CPU, portable** (runs on any x86-64) | `cpu` | `https://thebigeye.github.io/guanaco-py/whl/cpu/` |
+| **CPU, AVX2** (most CPUs since ~2013) | `avx2` | `https://thebigeye.github.io/guanaco-py/whl/avx2/` |
+| **CUDA 12.1 / 12.2 / 12.3 / 12.4** | `cu121` – `cu124` | `https://thebigeye.github.io/guanaco-py/whl/cu121/` … |
+| **CUDA 12.6 / 12.8 / 13.1** | `cu126` / `cu128` / `cu131` | `https://thebigeye.github.io/guanaco-py/whl/cu126/` … |
+
+> [!IMPORTANT]
+> In all cases, append `--extra-index-url https://pypi.org/simple` so pip can still fetch the pure-Python dependencies (`numpy`, `jinja2`, `diskcache`, ...) from PyPI. The GitHub Pages index only carries `guanaco-py` itself.
+
+**CPU (portable):**
+
+```bash
+pip install guanaco-py \
+  --index-url https://thebigeye.github.io/guanaco-py/whl/cpu/ \
+  --extra-index-url https://pypi.org/simple
+```
+
+**CPU (AVX2):**
+
+```bash
+pip install guanaco-py \
+  --index-url https://thebigeye.github.io/guanaco-py/whl/avx2/ \
+  --extra-index-url https://pypi.org/simple
+```
+
+> [!WARNING]
+> The AVX2 wheels require a CPU with **AVX2** support (Intel Haswell+, AMD Excavator+/Zen+). They will crash with an illegal instruction on the first inference if your processor is older. To check beforehand: run `grep -m1 avx2 /proc/cpuinfo` on Linux; on Windows, *Task Manager → Performance → CPU* (or CPU-Z). When in doubt, use the portable `cpu` channel, it always works.
+
+**CUDA:**
+
+```bash
+# Example: CUDA 12.4
+pip install guanaco-py \
+  --index-url https://thebigeye.github.io/guanaco-py/whl/cu124/ \
+  --extra-index-url https://pypi.org/simple
+```
+
+Where the CUDA version in the URL is one of `cu121`, `cu122`, `cu123`, `cu124`, `cu126`, `cu128` or `cu131` (CUDA 12.1, 12.2, 12.3, 12.4, 12.6, 12.8 and 13.1 respectively). Matching your installed CUDA toolkit's major.minor is what matters; you can check yours with `nvidia-smi`.
+
+> [!NOTE]
+> All wheels are built for **x86-64 only**, for both **Windows** and **Linux**. Linux wheels use the `manylinux_2_34_x86_64` policy, i.e. they need glibc ≥ 2.34 (Ubuntu 22.04+, Debian 12+, Fedora 35+, and anything newer). Every supported build covers **CPython 3.9 through 3.14**.
+
+> [!TIP]
+> Occasionally pip resolves its own cached indexes and claims there is no matching wheel. Adding `--only-binary=:all:` nudges it to pick the wheel from the custom index:
+> `pip install guanaco-py --only-binary=:all: --index-url https://thebigeye.github.io/guanaco-py/whl/cpu/`
+
+**Upgrading:** run the same command with `-U`. Every historical version stays published on the index, so pinned environments keep working.
+
+<details>
+<summary>Installing from a release tag (git source)</summary>
+
+If you need a source build (custom `CMAKE_ARGS`, other backends, bleeding edge), install straight from git, this compiles llama.cpp locally, so you need a C compiler and CMake 3.21+:
 
 ```bash
 pip install -U "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
 ```
 
-or also:
+or pinned to a release, for example `v0.5.0`:
 
-```bash
-git clone https://github.com/TheBigEye/guanaco-py --recursive
-cd guanaco-py
-python -m pip install -U pip
-pip install .
-```
-
-If you want install from an specific release, by exmaple `v0.5.0`:
 ```bash
 pip install -U git+https://github.com/TheBigEye/guanaco-py@v0.5.0
 ```
 
-This will build `llama.cpp` from source and install it alongside this python package.
-
-If this fails, add `--verbose` to the `pip install` see the full cmake build log.
-
-**Pre-built Wheel **
-
-It is also possible to install a pre-built wheel with basic CPU support.
-CPU wheels are built for **Linux x64** and **Windows x64**, for Python 3.9 through 3.14.
-
-> [!NOTE]
-> The release workflows intentionally target 64-bit systems only. Linux wheels use the `manylinux_2_34_x86_64` policy; CUDA wheels also remain x64-only.
-
-```bash
-pip install guanaco-py --extra-index-url https://thebigeye.github.io/guanaco-py/whl/cpu
-```
-
-> [!NOTE]
-> Sometimes I recommend running this in case Pip can't find any wheel.
-
-```bash
-pip install guanaco-py --only-binary=:all: --extra-index-url https://thebigeye.github.io/guanaco-py/whl/cpu/
-```
-
-**AVX2 wheel (CPU with AVX2)**
-
-A faster, separate channel is published for CPUs that support AVX2 (Intel
-Haswell+, AMD Excavator+/Zen+, e.g. the Athlon 3000G). It coexists with the
-portable `cpu` wheels; choose one channel or the other, not both.
-
-> [!WARNING]
-> These wheels require an **AVX2** CPU. They will not run on older processors
-> without AVX2 (illegal-instruction crash on the first inference).
-
-```bash
-pip install guanaco-py --extra-index-url https://thebigeye.github.io/guanaco-py/whl/avx2
-```
-
-### Installation Configuration
-
-`llama.cpp` supports a number of hardware acceleration backends to speed up inference as well as backend specific options. See the [llama.cpp build docs](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) for a full list.
-
-All `llama.cpp` cmake build options can be set via the `CMAKE_ARGS` environment variable or via the `--config-settings / -C` cli flag during installation.
-
-<details open>
-<summary>Environment Variables</summary>
-
-```bash
-# Linux
-CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" \
-  pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
-```
-
-```powershell
-# Windows
-$env:CMAKE_ARGS = "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS"
-pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
-```
 </details>
 
 <details>
-<summary>CLI / requirements.txt</summary>
+<summary>Installing with uv</summary>
 
-They can also be set via `pip install -C / --config-settings` command and saved to a `requirements.txt` file:
+The same indexes work with `uv pip` using `--index-url`, or declared once in `pyproject.toml`:
 
-```bash
-pip install --upgrade pip # ensure pip is up to date
-pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git" \
-  -C cmake.args="-DGGML_BLAS=ON;-DGGML_BLAS_VENDOR=OpenBLAS"
-```
+```toml
+[[tool.uv.index]]
+name = "guanaco-cpu"
+url = "https://thebigeye.github.io/guanaco-py/whl/avx2/"
+explicit = true
 
-```txt
-# requirements.txt
-
-git+https://github.com/TheBigEye/guanaco-py -C cmake.args="-DGGML_BLAS=ON;-DGGML_BLAS_VENDOR=OpenBLAS"
-```
-
-</details>
-
-### Supported Backends
-
-Below are some common backends, their build commands and any additional environment variables required.
-
-<details open>
-<summary>OpenBLAS (CPU)</summary>
-
-To install with OpenBLAS, set the `GGML_BLAS` and `GGML_BLAS_VENDOR` environment variables before installing:
-
-```bash
-CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
-```
-</details>
-
-<details>
-<summary>CUDA</summary>
-
-Installing a CUDA-supported version requires the CUDA Toolkit environment to be installed first.
-
-See here: https://developer.nvidia.com/cuda-toolkit-archive
-
-Then, set the `GGML_CUDA=on` environment variable before installing:
-
-```bash
-# Linux
-CMAKE_ARGS="-DGGML_CUDA=on" pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
-```
-
-```powershell
-# Windows
-$env:CMAKE_ARGS = "-DGGML_CUDA=on"
-pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
-```
-
-**Pre-built Wheel**
-
-It is also possible to install a pre-built wheel with CUDA support. As long as your system meets some requirements:
-CUDA wheels are built for Linux x64 and Windows x64 only. NVIDIA CUDA does not support 32-bit x86 builds.
-
-- CUDA Version is 12.1, 12.2, 12.3, 12.4, 12.6, 12.8 or 13.1
-- Python Version is 3.9, 3.10, 3.11, 3.12, 3.13 or 3.14
-
-```bash
-pip install guanaco-py \
-  --extra-index-url https://thebigeye.github.io/guanaco-py/whl/<cuda-version>
-```
-
-Where `<cuda-version>` is one of the following:
-- `cu121`: CUDA 12.1
-- `cu122`: CUDA 12.2
-- `cu123`: CUDA 12.3
-- `cu124`: CUDA 12.4
-- `cu126`: CUDA 12.6
-- `cu128`: CUDA 12.8
-- `cu131`: CUDA 13.1
-
-For example, to install the CUDA 12.1 wheel:
-
-```bash
-pip install guanaco-py --extra-index-url https://thebigeye.github.io/guanaco-py/whl/cu121
+[tool.uv.sources]
+guanaco-py = { index = "guanaco-cpu" }
 ```
 
 </details>
 
-<details>
-<summary>HIP (ROCm)</summary>
-
-This provides GPU acceleration on HIP-supported AMD GPUs. Make sure to have ROCm installed.
-
-You can download it from your Linux distro's package manager or from here: [ROCm Quick Start (Linux).](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/tutorial/quick-start.html#rocm-install-quick)
-
-To install with HIP / ROCm support for AMD cards, set the `GGML_HIP=on` environment variable before installing:
-
-```bash
-CMAKE_ARGS="-DGGML_HIP=ON -DGPU_TARGETS=gfx1030" pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
-```
-> [!NOTE]
-> `GPU_TARGETS` is optional, omitting it will build the code for all GPUs in the current system.
-
-**More details see here:** [ggml-org/llama.cpp/build.md#hip](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md#hip)
-
-</details>
-
-<details>
-<summary>Vulkan</summary>
-
-- For Windows User: Download and install the [Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows) with the default settings.
-
-- For Linux User: Follow the official LunarG instructions for the installation and setup of the Vulkan SDK in the [Getting Started with the Linux Tarball Vulkan SDK](https://vulkan.lunarg.com/doc/sdk/latest/linux/getting_started.html) guide.
-
-To install with Vulkan support, set the `GGML_VULKAN=on` environment variable before installing:
-
-```bash
-CMAKE_ARGS="-DGGML_VULKAN=on" pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
-```
-
-</details>
-
-<details>
-<summary>SYCL</summary>
-
-To install with SYCL support, set the `GGML_SYCL=on` environment variable before installing:
-
-```bash
-source /opt/intel/oneapi/setvars.sh
-CMAKE_ARGS="-DGGML_SYCL=on -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx" pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
-```
-</details>
-
-<details>
-<summary>RPC</summary>
-
-To install with RPC support, set the `GGML_RPC=on` environment variable before installing:
-
-```bash
-source /opt/intel/oneapi/setvars.sh
-CMAKE_ARGS="-DGGML_RPC=on" pip install "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
-```
-</details>
-
-
-### Windows Notes
-
-<details>
-<summary>Error: Can't find 'nmake' or 'CMAKE_C_COMPILER'</summary>
-
-If you run into issues where it complains it can't find `'nmake'` `'?'` or CMAKE_C_COMPILER, you can extract w64devkit as [mentioned in llama.cpp repo](https://github.com/ggerganov/llama.cpp#openblas) and add those manually to CMAKE_ARGS before running `pip` install:
-
-```ps
-$env:CMAKE_GENERATOR = "MinGW Makefiles"
-$env:CMAKE_ARGS = "-DGGML_OPENBLAS=on -DCMAKE_C_COMPILER=C:/w64devkit/bin/gcc.exe -DCMAKE_CXX_COMPILER=C:/w64devkit/bin/g++.exe"
-```
-
-See the above instructions and set `CMAKE_ARGS` to the BLAS backend you want to use.
-</details>
-
-### Upgrading and Reinstalling
-
-To upgrade and rebuild `guanaco-py` add `--upgrade --force-reinstall --no-cache-dir` flags to the `pip install` command to ensure the package is rebuilt from source.
-
-## High-level API
-
-[API Reference](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#high-level-api)
-
-The high-level API provides a simple managed interface through the [`Llama`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama) class.
-
-Below is a short example demonstrating how to use the high-level API to for basic text completion:
+## Quick start
 
 ```python
 from llama_cpp import Llama
 
 llm = Llama(
-      model_path="./models/7B/llama-model.gguf",
-      # n_gpu_layers=-1, # Uncomment to use GPU acceleration
-      # seed=1337, # Uncomment to set a specific seed
-      # n_ctx=2048, # Uncomment to increase the context window
-)
-output = llm(
-      "Q: Name the planets in the solar system? A: ", # Prompt
-      max_tokens=32, # Generate up to 32 tokens, set to None to generate up to the end of the context window
-      stop=["Q:", "\n"], # Stop generating just before the model would generate a new question
-      echo=True # Echo the prompt back in the output
-) # Generate a completion, can also call create_completion
-print(output)
-```
-
-By default `guanaco-py` generates completions in an OpenAI compatible format:
-
-```python
-{
-  "id": "cmpl-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "object": "text_completion",
-  "created": 1679561337,
-  "model": "./models/7B/llama-model.gguf",
-  "choices": [
-    {
-      "text": "Q: Name the planets in the solar system? A: Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, Neptune and Pluto.",
-      "index": 0,
-      "logprobs": None,
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 14,
-    "completion_tokens": 28,
-    "total_tokens": 42
-  }
-}
-```
-
-Text completion is available through the [`__call__`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama.__call__) and [`create_completion`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama.create_completion) methods of the [`Llama`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama) class.
-
-### Pulling models from Hugging Face Hub
-
-You can download `Llama` models in `gguf` format directly from Hugging Face using the [`from_pretrained`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama.from_pretrained) method.
-You'll need to install the `huggingface-hub` package to use this feature (`pip install huggingface-hub`).
-
-```python
-llm = Llama.from_pretrained(
-    repo_id="Qwen/Qwen2-0.5B-Instruct-GGUF",
-    filename="*q8_0.gguf",
-    verbose=False
-)
-```
-
-By default [`from_pretrained`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama.from_pretrained) will download the model to the huggingface cache directory, you can then manage installed model files with the [`huggingface-cli`](https://huggingface.co/docs/huggingface_hub/en/guides/cli) tool.
-
-### Chat Completion
-
-The high-level API also provides a simple interface for chat completion.
-
-Chat completion requires that the model knows how to format the messages into a single prompt.
-The `Llama` class does this using pre-registered chat formats (ie. `chatml`, `llama-2`, `gemma`, etc) or by providing a custom chat handler object.
-
-The model will will format the messages into a single prompt using the following order of precedence:
-  - Use the `chat_handler` if provided
-  - Use the `chat_format` if provided
-  - Use the `tokenizer.chat_template` from the `gguf` model's metadata (should work for most new models, older models may not have this)
-  - else, fallback to the `llama-2` chat format
-
-Set `verbose=True` to see the selected chat format.
-
-```python
-from llama_cpp import Llama
-llm = Llama(
-      model_path="path/to/llama-2/llama-model.gguf",
-      chat_format="llama-2"
-)
-llm.create_chat_completion(
-      messages = [
-          {"role": "system", "content": "You are an assistant who perfectly describes images."},
-          {
-              "role": "user",
-              "content": "Describe this image in detail please."
-          }
-      ]
-)
-```
-
-Chat completion is available through the [`create_chat_completion`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama.create_chat_completion) method of the [`Llama`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama) class.
-
-For OpenAI API v1 compatibility, you use the [`create_chat_completion_openai_v1`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama.create_chat_completion_openai_v1) method which will return pydantic models instead of dicts.
-
-
-### JSON and JSON Schema Mode
-
-To constrain chat responses to only valid JSON or a specific JSON Schema use the `response_format` argument in [`create_chat_completion`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama.create_chat_completion).
-
-#### JSON Mode
-
-The following example will constrain the response to valid JSON strings only.
-
-```python
-from llama_cpp import Llama
-llm = Llama(model_path="path/to/model.gguf", chat_format="chatml")
-llm.create_chat_completion(
-    messages=[
-        {
-            "role": "system",
-            "content": "You are a helpful assistant that outputs in JSON.",
-        },
-        {"role": "user", "content": "Who won the world series in 2020"},
-    ],
-    response_format={
-        "type": "json_object",
-    },
-    temperature=0.7,
-)
-```
-
-#### JSON Schema Mode
-
-To constrain the response further to a specific JSON Schema add the schema to the `schema` property of the `response_format` argument.
-
-```python
-from llama_cpp import Llama
-llm = Llama(model_path="path/to/model.gguf", chat_format="chatml")
-llm.create_chat_completion(
-    messages=[
-        {
-            "role": "system",
-            "content": "You are a helpful assistant that outputs in JSON.",
-        },
-        {"role": "user", "content": "Who won the world series in 2020"},
-    ],
-    response_format={
-        "type": "json_object",
-        "schema": {
-            "type": "object",
-            "properties": {"team_name": {"type": "string"}},
-            "required": ["team_name"],
-        },
-    },
-    temperature=0.7,
-)
-```
-
-### Function Calling
-
-The high-level API supports OpenAI compatible function and tool calling. This is possible through the `functionary` pre-trained models chat format or through the generic `chatml-function-calling` chat format.
-
-```python
-from llama_cpp import Llama
-llm = Llama(model_path="path/to/chatml/llama-model.gguf", chat_format="chatml-function-calling")
-llm.create_chat_completion(
-      messages = [
-        {
-          "role": "system",
-          "content": "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. The assistant calls functions with appropriate input when necessary"
-
-        },
-        {
-          "role": "user",
-          "content": "Extract Jason is 25 years old"
-        }
-      ],
-      tools=[{
-        "type": "function",
-        "function": {
-          "name": "UserDetail",
-          "parameters": {
-            "type": "object",
-            "title": "UserDetail",
-            "properties": {
-              "name": {
-                "title": "Name",
-                "type": "string"
-              },
-              "age": {
-                "title": "Age",
-                "type": "integer"
-              }
-            },
-            "required": [ "name", "age" ]
-          }
-        }
-      }],
-      tool_choice={
-        "type": "function",
-        "function": {
-          "name": "UserDetail"
-        }
-      }
-)
-```
-
-<details>
-<summary>Functionary v2</summary>
-
-The various gguf-converted files for this set of models can be found [here](https://huggingface.co/meetkai). Functionary is able to intelligently call functions and also analyze any provided function outputs to generate coherent responses. All v2 models of functionary supports **parallel function calling**. You can provide either `functionary-v1` or `functionary-v2` for the `chat_format` when initializing the Llama class.
-
-Due to discrepancies between llama.cpp and HuggingFace's tokenizers, it is required to provide HF Tokenizer for functionary. The `LlamaHFTokenizer` class can be initialized and passed into the Llama class. This will override the default llama.cpp tokenizer used in Llama class. The tokenizer files are already included in the respective HF repositories hosting the gguf files.
-
-```python
-from llama_cpp import Llama
-from llama_cpp.llama_tokenizer import LlamaHFTokenizer
-llm = Llama.from_pretrained(
-  repo_id="meetkai/functionary-small-v2.2-GGUF",
-  filename="functionary-small-v2.2.q4_0.gguf",
-  chat_format="functionary-v2",
-  tokenizer=LlamaHFTokenizer.from_pretrained("meetkai/functionary-small-v2.2-GGUF")
-)
-```
-
-**NOTE**: There is no need to provide the default system messages used in Functionary as they are added automatically in the Functionary chat handler. Thus, the messages should contain just the chat messages and/or system messages that provide additional context for the model (e.g.: datetime, etc.).
-</details>
-
-### Multi-modal Models
-
-`guanaco-py` supports such as llava1.5 which allow the language model to read information from both text and images.
-
-Below are the supported multi-modal models and their respective chat handlers (Python API) and chat formats (Server API).
-
-| Model | `LlamaChatHandler` | `chat_format` |
-|:--- |:--- |:--- |
-| [llava-v1.5-7b](https://huggingface.co/mys/ggml_llava-v1.5-7b) | `Llava15ChatHandler` | `llava-1-5` |
-| [llava-v1.5-13b](https://huggingface.co/mys/ggml_llava-v1.5-13b) | `Llava15ChatHandler` | `llava-1-5` |
-| [llava-v1.6-34b](https://huggingface.co/cjpais/llava-v1.6-34B-gguf) | `Llava16ChatHandler` | `llava-1-6` |
-| [moondream2](https://huggingface.co/vikhyatk/moondream2) | `MoondreamChatHandler` | `moondream2` |
-| [nanollava](https://huggingface.co/abetlen/nanollava-gguf) | `NanollavaChatHandler` | `nanollava` |
-| [llama-3-vision-alpha](https://huggingface.co/abetlen/llama-3-vision-alpha-gguf) | `Llama3VisionAlphaChatHandler` | `llama-3-vision-alpha` |
-| [minicpm-v-2.6](https://huggingface.co/openbmb/MiniCPM-V-2_6-gguf) | `MiniCPMv26ChatHandler` | `minicpm-v-2.6`, `minicpm-v-4.0` |
-| [minicpm-v-4.5](https://huggingface.co/openbmb/MiniCPM-V-4_5-gguf) | `MiniCPMv45ChatHandler` | `minicpm-v-4.5` |
-| [gemma3](https://huggingface.co/unsloth/gemma-3-27b-it-GGUF) | `Gemma3ChatHandler` | `gemma3` |
-| [glm4.1v](https://huggingface.co/unsloth/GLM-4.1V-9B-Thinking-GGUF) | `GLM41VChatHandler` | `glm4.1v` |
-| [glm4.6v](https://huggingface.co/unsloth/GLM-4.6V-Flash-GGUF) | `GLM46VChatHandler` | `glm4.6v` |
-| [granite-docling](https://huggingface.co/ibm-granite/granite-docling-258M-GGUF) | `GraniteDoclingChatHandler` | `granite-docling` |
-| [lfm2-vl](https://huggingface.co/LiquidAI/LFM2-VL-3B-GGUF) | `LFM2VLChatHandler` | `lfm2-vl` |
-| [qwen2.5-vl](https://huggingface.co/unsloth/Qwen2.5-VL-3B-Instruct-GGUF) | `Qwen25VLChatHandler` | `qwen2.5-vl` |
-| [qwen3-vl](https://huggingface.co/unsloth/Qwen3-VL-8B-Thinking-GGUF) | `Qwen3VLChatHandler` | `qwen3-vl` |
-
-
-Then you'll need to use a custom chat handler to load the clip model and process the chat messages and images.
-
-```python
-from llama_cpp import Llama
-from llama_cpp.llama_chat_format import Llava15ChatHandler
-chat_handler = Llava15ChatHandler(clip_model_path="path/to/llava/mmproj.bin")
-llm = Llama(
-  model_path="./path/to/llava/llama-model.gguf",
-  chat_handler=chat_handler,
-  n_ctx=2048, # n_ctx should be increased to accommodate the image embedding
-)
-llm.create_chat_completion(
-    messages = [
-        {"role": "system", "content": "You are an assistant who perfectly describes images."},
-        {
-            "role": "user",
-            "content": [
-                {"type" : "text", "text": "What's in this image?"},
-                {"type": "image_url", "image_url": {"url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg" } }
-            ]
-        }
-    ]
-)
-```
-
-You can also pull the model from the Hugging Face Hub using the `from_pretrained` method.
-
-```python
-from llama_cpp import Llama
-from llama_cpp.llama_chat_format import MoondreamChatHandler
-
-chat_handler = MoondreamChatHandler.from_pretrained(
-  repo_id="vikhyatk/moondream2",
-  filename="*mmproj*",
-)
-
-llm = Llama.from_pretrained(
-  repo_id="vikhyatk/moondream2",
-  filename="*text-model*",
-  chat_handler=chat_handler,
-  n_ctx=2048, # n_ctx should be increased to accommodate the image embedding
+    model_path="path/to/model.gguf",
+    n_ctx=4096,
+    chat_format="llama-3",  # use the template your model was trained on
 )
 
 response = llm.create_chat_completion(
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type" : "text", "text": "What's in this image?"},
-                {"type": "image_url", "image_url": {"url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg" } }
-
-            ]
-        }
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user",   "content": "Say hello in one short sentence."},
     ]
 )
-print(response["choices"][0]["text"])
+print(response["choices"][0]["message"]["content"])
 ```
 
-**Note**: Multi-modal models also support tool calling and JSON mode.
+Everything else — plain text completion, chat formats, grammars/JSON mode, embeddings, speculative decoding, function calling, the low-level `ctypes` API, works exactly the same as upstream, because it *is* the same code.
 
-<details>
-<summary>Loading a Local Image</summary>
+> [!NOTE]
+> Documentation is currently shared with the original project: [https://llama-cpp-python.readthedocs.io/en/latest](https://llama-cpp-python.readthedocs.io/en/latest). As this fork diverges further, separate documentation may be created.
 
-Images can be passed as base64 encoded data URIs. The following example demonstrates how to do this.
+## The server module will be removed
 
-```python
-import base64
+> [!CAUTION]
+> **Heads up:** the bundled OpenAI-compatible web server (`llama_cpp.server`) will be **removed entirely** in a future release.
 
-def image_to_base64_data_uri(file_path):
-    with open(file_path, "rb") as img_file:
-        base64_data = base64.b64encode(img_file.read()).decode('utf-8')
-        return f"data:image/png;base64,{base64_data}"
+The server is a poor fit for a wheels-only distribution: it drags in a whole web-framework dependency stack (`fastapi`, `uvicorn`, `pydantic-settings`, ...) that most callers never use, and it duplicates a job that dedicated servers already do better.
 
-# Replace 'file_path.png' with the actual path to your PNG file
-file_path = 'file_path.png'
-data_uri = image_to_base64_data_uri(file_path)
+If you serve models over HTTP today, plan accordingly:
 
-messages = [
-    {"role": "system", "content": "You are an assistant who perfectly describes images."},
-    {
-        "role": "user",
-        "content": [
-            {"type": "image_url", "image_url": {"url": data_uri }},
-            {"type" : "text", "text": "Describe this image in detail please."}
-        ]
-    }
-]
+* **Pin your current version** while you need the embedded server, or
+* **Migrate to [llama.cpp's own server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server)**, which is the better-maintained OpenAI-compatible endpoint and also ships prebuilt binaries.
 
-```
+This notice is the deprecation window: the current release still ships the server module, but it will disappear with a future version bump.
 
-</details>
+## Why is it not on PyPI (and never will be)?
 
-### Speculative Decoding
+Not a limitation, a deliberate and permanent choice, for three reasons that cannot be fixed on PyPI's side:
 
-`guanaco-py` supports speculative decoding which allows the model to generate completions based on a draft model.
+1. **pip cannot pick a backend for you.**
+   PyPI has no notion of "this machine has CUDA 12.4" or "this CPU lacks AVX2". A package on PyPI means exactly one default build per platform, so GPU users would silently download the CPU build (hundreds of extra megabytes) and wonder why nothing is fast. Per-backend indexes make that choice **explicit**, and impossible to get wrong by accident.
 
-The fastest way to use speculative decoding is through the `LlamaPromptLookupDecoding` class.
+2. **CUDA wheels do not fit PyPI's limits in practice.**
+   PyPI caps file sizes at 100 MB by default, with raises granted case-by-case. A CUDA-version x Python-version wheel matrix is exactly the workload those caps are not sized for, it's the same reason PyTorch, JAX and every serious CUDA project self-host their package indexes. Publishing only the small CPU wheels on PyPI would just recreate the problem as two diverging install paths for the same package.
 
-Just pass this as a draft model to the `Llama` class during initialization.
+3. **This index *is* the product.**
+   The whole point of `guanaco-py` is that the right wheel for your hardware is one explicit line away, and stays installable forever, because old versions are never pruned. A partial PyPI entry would only add a slower, more confusing second door, and would attract bug reports against a build that does not represent this repository.
 
-```python
-from llama_cpp import Llama
-from llama_cpp.llama_speculative import LlamaPromptLookupDecoding
+> [!TIP]
+> If `pip install guanaco-py` fails on your machine, the answer is never "wait for PyPI" - it is "point pip at the index shown in [Installation](#installation)".
 
-llama = Llama(
-    model_path="path/to/model.gguf",
-    draft_model=LlamaPromptLookupDecoding(num_pred_tokens=10) # num_pred_tokens is the number of tokens to predict 10 is the default and generally good for gpu, 2 performs better for cpu-only machines.
-)
-```
+## Development
 
-### Embeddings
+This repository periodically syncs from [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python) and builds the wheel matrix in CI. Issues and PRs about **packaging, wheels and documentation** are welcome here; bugs in the bindings' behavior or in model inference should be reported to [JamePeng's repo](https://github.com/JamePeng/llama-cpp-python) or to [llama.cpp](https://github.com/ggml-org/llama.cpp) directly.
 
-To generate text embeddings use [`create_embedding`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama.create_embedding) or [`embed`](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#llama_cpp.Llama.embed). Note that you must pass `embedding=True` to the constructor upon model creation for these to work properly.
+## License & credits
 
-```python
-import llama_cpp
-
-llm = llama_cpp.Llama(model_path="path/to/model.gguf", embedding=True)
-
-embeddings = llm.create_embedding("Hello, world!")
-
-# or create multiple embeddings at once
-
-embeddings = llm.create_embedding(["Hello, world!", "Goodbye, world!"])
-```
-
-There are two primary notions of embeddings in a Transformer-style model: *token level* and *sequence level*. Sequence level embeddings are produced by "pooling" token level embeddings together, usually by averaging them or using the first token.
-
-Models that are explicitly geared towards embeddings will usually return sequence level embeddings by default, one for each input string. Non-embedding models such as those designed for text generation will typically return only token level embeddings, one for each token in each sequence. Thus the dimensionality of the return type will be one higher for token level embeddings.
-
-It is possible to control pooling behavior in some cases using the `pooling_type` flag on model creation. You can ensure token level embeddings from any model using `LLAMA_POOLING_TYPE_NONE`. The reverse, getting a generation oriented model to yield sequence level embeddings is currently not possible, but you can always do the pooling manually.
-
-### Adjusting the Context Window
-
-The context window of the Llama models determines the maximum number of tokens that can be processed at once. By default, this is set to 512 tokens, but can be adjusted based on your requirements.
-
-For instance, if you want to work with larger contexts, you can expand the context window by setting the n_ctx parameter when initializing the Llama object:
-
-```python
-llm = Llama(model_path="./models/7B/llama-model.gguf", n_ctx=2048)
-```
-
-## OpenAI Compatible Web Server
-
-`guanaco-py` offers a web server which aims to act as a drop-in replacement for the OpenAI API.
-This allows you to use llama.cpp compatible models with any OpenAI compatible client (language libraries, services, etc).
-
-To install the server package and get started:
-
-```bash
-pip install 'git+https://github.com/TheBigEye/guanaco-py.git#egg=guanaco-py[server]'
-python3 -m llama_cpp.server --model models/7B/llama-model.gguf
-```
-
-Similar to Hardware Acceleration section above, you can also install with GPU (cuBLAS) support like this:
-
-```bash
-CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install 'git+https://github.com/TheBigEye/guanaco-py.git#egg=guanaco-py[server]'
-python3 -m llama_cpp.server --model models/7B/llama-model.gguf --n_gpu_layers 35
-```
-
-Navigate to [http://localhost:8000/docs](http://localhost:8000/docs) to see the OpenAPI documentation.
-
-To bind to `0.0.0.0` to enable remote connections, use `python3 -m llama_cpp.server --host 0.0.0.0`.
-Similarly, to change the port (default is 8000), use `--port`.
-
-You probably also want to set the prompt format. For chatml, use
-
-```bash
-python3 -m llama_cpp.server --model models/7B/llama-model.gguf --chat_format chatml
-```
-
-That will format the prompt according to how model expects it. You can find the prompt format in the model card.
-For possible options, see [llama_cpp/llama_chat_format.py](llama_cpp/llama_chat_format.py) and look for lines starting with "@register_chat_format".
-
-If you have `huggingface-hub` installed, you can also use the `--hf_model_repo_id` flag to load a model from the Hugging Face Hub.
-
-```bash
-python3 -m llama_cpp.server --hf_model_repo_id Qwen/Qwen2-0.5B-Instruct-GGUF --model '*q8_0.gguf'
-```
-
-### Web Server Features
-
-- [Local Copilot replacement](https://llama-cpp-python.readthedocs.io/en/latest/server/#code-completion)
-- [Function Calling support](https://llama-cpp-python.readthedocs.io/en/latest/server/#function-calling)
-- [Vision API support](https://llama-cpp-python.readthedocs.io/en/latest/server/#multimodal-models)
-- [Multiple Models](https://llama-cpp-python.readthedocs.io/en/latest/server/#configuration-and-multi-model-support)
-
-## Docker image
-
-A Docker image is available on [GHCR](https://ghcr.io/thebigeye/guanaco-py). To run the server:
-
-```bash
-docker run --rm -it -p 8000:8000 -v /path/to/models:/models -e MODEL=/models/llama-model.gguf ghcr.io/thebigeye/guanaco-py:latest
-```
-
-[Docker on termux (requires root)](https://gist.github.com/FreddieOliveira/efe850df7ff3951cb62d74bd770dce27) is currently the only known way to run this on phones, see [termux support issue](https://github.com/abetlen/llama-cpp-python/issues/389)
-
-## Low-level API
-
-[API Reference](https://llama-cpp-python.readthedocs.io/en/latest/api-reference/#low-level-api)
-
-The low-level API is a direct [`ctypes`](https://docs.python.org/3/library/ctypes.html) binding to the C API provided by `llama.cpp`.
-The entire low-level API can be found in [llama_cpp/llama_cpp.py](https://github.com/abetlen/llama-cpp-python/blob/master/llama_cpp/llama_cpp.py) and directly mirrors the C API in [llama.h](https://github.com/ggerganov/llama.cpp/blob/master/llama.h).
-
-Below is a short example demonstrating how to use the low-level API to tokenize a prompt:
-
-```python
-import llama_cpp
-import ctypes
-llama_cpp.llama_backend_init(False) # Must be called once at the start of each program
-params = llama_cpp.llama_context_default_params()
-# use bytes for char * params
-model = llama_cpp.llama_load_model_from_file(b"./models/7b/llama-model.gguf", params)
-ctx = llama_cpp.llama_new_context_with_model(model, params)
-max_tokens = params.n_ctx
-# use ctypes arrays for array params
-tokens = (llama_cpp.llama_token * int(max_tokens))()
-n_tokens = llama_cpp.llama_tokenize(ctx, b"Q: Name the planets in the solar system? A: ", tokens, max_tokens, llama_cpp.c_bool(True))
-llama_cpp.llama_free(ctx)
-```
-
-Check out the [examples folder](examples/low_level_api) for more examples of using the low-level API.
-
-## Documentation
-
-Documentation is available via [https://llama-cpp-python.readthedocs.io/](https://llama-cpp-python.readthedocs.io/).
-If you find any issues with the documentation, please open an issue or submit a PR.
-
-## License
-
-This project is licensed under the terms of the MIT license.
+* [MIT](LICENSE.md)
+* [llama.cpp](https://github.com/ggml-org/llama.cpp) - the inference engine these bindings wrap, by [@ggerganov](https://github.com/ggerganov) and contributors
+* [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python) - the original project these bindings come from Andrei Betlen
+* [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python) - the actively maintained upstream this repository tracks
