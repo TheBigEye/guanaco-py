@@ -143,7 +143,7 @@ response = llm.create_chat_completion(
 print(response["choices"][0]["message"]["content"])
 ```
 
-Everything else — plain text completion, chat formats, grammars/JSON mode, embeddings, speculative decoding, function calling, the low-level `ctypes` API, works exactly the same as upstream, because it *is* the same code.
+Everything else, plain text completion, chat formats, grammars/JSON mode, embeddings, speculative decoding, function calling, the low-level `ctypes` API, works exactly the same as upstream, because it *is* the same code.
 
 > [!NOTE]
 > Documentation is currently shared with the original project: [https://llama-cpp-python.readthedocs.io/en/latest](https://llama-cpp-python.readthedocs.io/en/latest). As this fork diverges further, separate documentation may be created.
