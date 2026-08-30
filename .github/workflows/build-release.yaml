@@ -1,4 +1,4 @@
-name: Build Release and Publish
+name: Build and Release
 
 on:
   workflow_dispatch:
@@ -42,49 +42,49 @@ jobs:
   cuda-121:
     name: CUDA 12.1
     needs: version
-    uses: ./.github/workflows/build-wheels-cuda.yaml
+    uses: ./.github/workflows/build-wheel-cuda.yaml
     with:
       cuda: cu121
 
   cuda-122:
     name: CUDA 12.2
     needs: version
-    uses: ./.github/workflows/build-wheels-cuda.yaml
+    uses: ./.github/workflows/build-wheel-cuda.yaml
     with:
       cuda: cu122
 
   cuda-123:
     name: CUDA 12.3
     needs: version
-    uses: ./.github/workflows/build-wheels-cuda.yaml
+    uses: ./.github/workflows/build-wheel-cuda.yaml
     with:
       cuda: cu123
 
   cuda-124:
     name: CUDA 12.4
     needs: version
-    uses: ./.github/workflows/build-wheels-cuda.yaml
+    uses: ./.github/workflows/build-wheel-cuda.yaml
     with:
       cuda: cu124
 
   cuda-126:
     name: CUDA 12.6
     needs: version
-    uses: ./.github/workflows/build-wheels-cuda.yaml
+    uses: ./.github/workflows/build-wheel-cuda.yaml
     with:
       cuda: cu126
 
   cuda-128:
     name: CUDA 12.8
     needs: version
-    uses: ./.github/workflows/build-wheels-cuda.yaml
+    uses: ./.github/workflows/build-wheel-cuda.yaml
     with:
       cuda: cu128
 
   cuda-131:
     name: CUDA 13.1
     needs: version
-    uses: ./.github/workflows/build-wheels-cuda.yaml
+    uses: ./.github/workflows/build-wheel-cuda.yaml
     with:
       cuda: cu131
 

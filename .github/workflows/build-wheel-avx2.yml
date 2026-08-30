@@ -1,4 +1,4 @@
-name: Build AVX2 CPU Wheels
+name: Build AVX2 Wheels
 
 # AVX2-targeted CPU wheels. Kept as a SEPARATE channel from the portable
 # ("cpu") build so both can coexist:
