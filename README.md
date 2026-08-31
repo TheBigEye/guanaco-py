@@ -7,7 +7,7 @@
 **A simplified, wheels-first fork, kept in sync with [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python)**
 
 [![Forked from abetlen/llama-cpp-python](https://img.shields.io/badge/forked%20from-abetlen/llama--cpp--python-blue)](https://github.com/abetlen/llama-cpp-python)
-[![Tests](https://github.com/TheBigEye/guanaco-py/actions/workflows/test.yaml/badge.svg?branch=main)](https://github.com/TheBigEye/guanaco-py/actions/workflows/test.yaml)
+[![Tests](https://github.com/TheBigEye/guanaco-py/actions/workflows/build-testing.yaml/badge.svg?branch=main)](https://github.com/TheBigEye/guanaco-py/actions/workflows/build-testing.yaml)
 [![Github All Releases](https://img.shields.io/github/downloads/TheBigEye/guanaco-py/total.svg?label=Github%20Downloads)]()
 
 The bindings you already know `import llama_cpp`, API-compatible with upstream but **prebuilt and ready to install**, including on **pure-CPU machines**, the one configuration upstream does not publish wheels for. Pick the wheel for your hardware, run `pip install`, done: no compiler, no CMake, no rebuilding llama.cpp from source on every machine and every update.
