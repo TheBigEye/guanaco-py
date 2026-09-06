@@ -1,2 +1,2 @@
 # Build-orchestration dependency only; runtime dependencies come from upstream.
-tomlkit==0.13.3
+tomlkit==0.15.1
