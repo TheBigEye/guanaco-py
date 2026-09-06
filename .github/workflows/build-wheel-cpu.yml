@@ -1,85 +1,111 @@
 name: Build CPU Wheels
 
 on:
-  workflow_dispatch:
   workflow_call:
+    inputs:
+      version:
+        description: Upstream X.Y.Z prepared by the release workflow
+        required: true
+        type: string
+      channel:
+        description: cpu (portable) or avx2 (fixed SIMD target)
+        type: string
+        default: cpu
 
 permissions:
   contents: read
 
 jobs:
-  build-cpu-x64:
-    name: ${{ matrix.label }} · Py 3.9–3.14
+  build:
+    name: ${{ inputs.channel }} · ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            platform: linux-x64
+            platform: linux
             label: Linux x64 · manylinux_2_34
             cibw_archs: x86_64
-            cibw_build: >-
-              cp39-manylinux_x86_64 cp310-manylinux_x86_64
-              cp311-manylinux_x86_64 cp312-manylinux_x86_64
-              cp313-manylinux_x86_64 cp314-manylinux_x86_64
           - os: windows-latest
-            platform: windows-x64
+            platform: windows
             label: Windows x64 · AMD64
             cibw_archs: AMD64
-            cibw_build: >-
-              cp39-win_amd64 cp310-win_amd64 cp311-win_amd64
-              cp312-win_amd64 cp313-win_amd64 cp314-win_amd64
-
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUILD_CHANNEL: ${{ inputs.channel }}
+      WHEEL_PLATFORM: ${{ matrix.platform }}
+      EXPECTED_VERSION: ${{ inputs.version }}
     steps:
-      - name: Checkout Guanaco and llama.cpp
+      - name: Checkout build recipes
         uses: actions/checkout@v7
         with:
-          submodules: recursive
-
-      - name: Build and validate CPU wheels
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Download the prepared source snapshot
+        uses: actions/download-artifact@v8
+        with:
+          name: guanaco-source
+          path: work/prepared
+      - name: Verify and unpack source
+        run: python .github/scripts/unpack_source.py work/prepared work/source --version "$EXPECTED_VERSION"
+      - name: Resolve frozen Python matrix and CPU flags
+        id: config
+        run: >-
+          python .github/scripts/configure_build.py cpu
+          --manifest work/prepared/build-manifest.json
+          --channel "$BUILD_CHANNEL" --platform "$WHEEL_PLATFORM"
+          --version "$EXPECTED_VERSION"
+      - name: Build, repair and smoke-test wheels
         uses: pypa/cibuildwheel@v3.3.1
+        with:
+          package-dir: work/source
+          output-dir: wheelhouse
         env:
-          CIBW_BUILD: ${{ matrix.cibw_build }}
+          CIBW_BUILD: ${{ steps.config.outputs.build }}
           CIBW_ARCHS: ${{ matrix.cibw_archs }}
           CIBW_SKIP: "*-musllinux_*"
           CIBW_BUILD_VERBOSITY: 1
-
-          # llama.cpp now uses C++ symbols newer than the manylinux_2_28
-          # policy permits. AlmaLinux 9's system GCC 11 matches the
-          # manylinux_2_34 GLIBCXX/CXXABI policy, unlike the image's GCC 14.
+          # AlmaLinux 9's GCC 11 matches the manylinux_2_34 GLIBCXX policy;
+          # the container's newer default compiler can exceed that policy.
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_34
-          CIBW_BEFORE_ALL_LINUX: >-
-            dnf install -y gcc gcc-c++ &&
-            /usr/bin/g++ --version
-          CIBW_ENVIRONMENT_LINUX: >-
-            CC=/usr/bin/gcc CXX=/usr/bin/g++
-            CMAKE_ARGS="-DGGML_CUDA=OFF -DGGML_METAL=OFF
-            -DGGML_VULKAN=OFF -DGGML_BLAS=OFF -DGGML_NATIVE=OFF
-            -DGGML_BACKEND_DL=OFF -DGGML_CPU_ALL_VARIANTS=OFF
-            -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF
-            -DGGML_F16C=OFF -DGGML_SSE42=OFF -DGGML_BMI2=OFF"
-          CIBW_ENVIRONMENT_WINDOWS: >-
-            CMAKE_ARGS="-DGGML_CUDA=OFF -DGGML_METAL=OFF
-            -DGGML_VULKAN=OFF -DGGML_BLAS=OFF -DGGML_NATIVE=OFF
-            -DGGML_BACKEND_DL=OFF -DGGML_CPU_ALL_VARIANTS=OFF
-            -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF
-            -DGGML_F16C=OFF -DGGML_SSE42=OFF -DGGML_BMI2=OFF"
-
-          # Show the exact ABI analysis before repair so future policy
-          # failures identify their required symbols in the Actions log.
+          CIBW_BEFORE_ALL_LINUX: dnf install -y gcc gcc-c++ && /usr/bin/g++ --version
+          CIBW_ENVIRONMENT_LINUX: ${{ steps.config.outputs.cibw_environment }}
+          CIBW_ENVIRONMENT_WINDOWS: ${{ steps.config.outputs.cibw_environment }}
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
             auditwheel show {wheel} &&
-            auditwheel repair --plat manylinux_2_34_x86_64
-            -w {dest_dir} {wheel}
+            auditwheel repair --only-plat --plat manylinux_2_34_x86_64 -w {dest_dir} {wheel}
           CIBW_TEST_COMMAND: >-
             python -c "import importlib.metadata as m; import llama_cpp;
             assert m.version('guanaco-py') == llama_cpp.__version__;
-            print('guanaco-py', llama_cpp.__version__, 'CPU x64 wheel OK')"
-
-      - name: Upload CPU x64 wheels
+            print(llama_cpp.llama_print_system_info().decode())"
+      - name: Validate full matrix, file integrity and unchanged bindings
+        env:
+          ARTIFACT: ${{ steps.config.outputs.artifact }}
+        run: >-
+          python .github/scripts/verify_wheels.py
+          --manifest work/prepared/build-manifest.json --directory wheelhouse
+          --channel "$BUILD_CHANNEL" --platform "$WHEEL_PLATFORM"
+          --receipt "work/receipts/$ARTIFACT.json"
+      - name: Upload wheel binaries
         uses: actions/upload-artifact@v7
         with:
-          name: guanaco-py-cpu-${{ matrix.platform }}
+          name: ${{ steps.config.outputs.artifact }}
           path: wheelhouse/*.whl
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+          overwrite: true
+      - name: Upload the small validation receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: receipt-${{ steps.config.outputs.artifact }}
+          path: work/receipts/*.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

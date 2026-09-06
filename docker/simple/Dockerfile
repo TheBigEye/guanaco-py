@@ -1,42 +1,19 @@
-# Define the image argument and provide a default value
-ARG IMAGE=python:3-slim-bookworm
-
-# Use the image as specified
+ARG IMAGE=python:3.12-slim-bookworm
 FROM ${IMAGE}
 
-# Re-declare the ARG after FROM
-ARG IMAGE
+ARG GUANACO_VERSION
+ARG GUANACO_CHANNEL=cpu
+ARG GUANACO_REPOSITORY=TheBigEye/guanaco-py
 
-# Update and upgrade the existing packages
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    git \
-    python3 \
-    python3-pip \
-    ninja-build \
-    libopenblas-dev \
-    build-essential \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/*
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/fetch_release.py .github/scripts/download_utils.py /tmp/
+RUN python /tmp/fetch_release.py wheel --version "${GUANACO_VERSION}" \
+    --channel "${GUANACO_CHANNEL}" --repository "${GUANACO_REPOSITORY}" \
+    && rm -rf /tmp/guanaco-release /tmp/fetch_release.py /tmp/download_utils.py /tmp/__pycache__
 
-RUN mkdir /app
 WORKDIR /app
-COPY . /app
-
-RUN python3 -m pip install --upgrade pip
-
-RUN python3 -m pip install --upgrade pip pytest cmake scikit-build setuptools fastapi uvicorn sse-starlette pydantic-settings starlette-context
-
-# Install guanaco-py from this checkout.
-# NOTE: guanaco-py is not on PyPI, it must be built from this tree,
-# which `actions/checkout` already fetched with submodules: recursive.
-RUN pip install . --verbose
-
-# Set environment variable for the host
-ENV HOST=0.0.0.0
-ENV PORT=8000
-
-# Expose a port for the server
+COPY docker/simple/run.sh /app/run.sh
+ENV HOST=0.0.0.0 PORT=8000
 EXPOSE 8000
-
-# Run the server start script
-CMD ["/bin/sh", "/app/docker/simple/run.sh"]
+ENTRYPOINT ["/bin/sh", "/app/run.sh"]

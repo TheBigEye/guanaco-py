@@ -1,112 +1,38 @@
-update:
-	poetry install
-	git submodule update --init --recursive
+PYTHON ?= python3
+VERSION ?=
 
-update.vendor:
-	cd vendor/llama.cpp && git pull origin master
-
-deps:
-	python3 -m pip install --upgrade pip
-	python3 -m pip install -e ".[all]"
-
-build:
-	python3 -m pip install --verbose -e .
-
-build.debug:
-	python3 -m pip install \
-		--verbose \
-		--config-settings=cmake.verbose=true \
-		--config-settings=logging.level=INFO \
-		--config-settings=install.strip=false  \
-		--config-settings=cmake.args="-DCMAKE_BUILD_TYPE=Debug;-DCMAKE_C_FLAGS='-ggdb -O0';-DCMAKE_CXX_FLAGS='-ggdb -O0'" \
-		--editable .
-
-build.debug.extra:
-	python3 -m pip install \
-		--verbose \
-		--config-settings=cmake.verbose=true \
-		--config-settings=logging.level=INFO \
-		--config-settings=install.strip=false  \
-		--config-settings=cmake.args="-DCMAKE_BUILD_TYPE=Debug;-DCMAKE_C_FLAGS='-fsanitize=address -ggdb -O0';-DCMAKE_CXX_FLAGS='-fsanitize=address -ggdb -O0'" \
-		--editable .
-
-build.blis:
-	CMAKE_ARGS="-DGGML_BLAS=on -DGGML_BLAS_VENDOR=FLAME" python3 -m pip install --verbose -e .
-
-build.cann:
-	CMAKE_ARGS="-DGGML_CANN=on -DCMAKE_BUILD_TYPE=release" python3 -m pip install --verbose -e .
-
-build.cuda:
-	CMAKE_ARGS="-DGGML_CUDA=on" python3 -m pip install --verbose -e .
-
-build.metal:
-	CMAKE_ARGS="-DGGML_METAL=on" python3 -m pip install --verbose -e .
-
-build.musa:
-	CMAKE_ARGS="-DGGML_MUSA=ON" python3 -m pip install --verbose -e .
-
-build.openblas:
-	CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" python3 -m pip install --verbose -e .
-
-build.openvino:
-	CMAKE_ARGS="-DGGML_OPENVINO=ON" python3 -m pip install --verbose -e .
-
-build.rpc:
-	CMAKE_ARGS="-DGGML_RPC=on" python3 -m pip install --verbose -e .
-
-build.sycl:
-	CMAKE_ARGS="-DGGML_SYCL=on" python3 -m pip install --verbose -e .
-
-build.vulkan:
-	CMAKE_ARGS="-DGGML_VULKAN=on" python3 -m pip install --verbose -e .
-
-build.webgpu:
-	CMAKE_ARGS="-DGGML_WEBGPU=ON" python3 -m pip install --verbose -e .
-
-build.zdnn:
-	CMAKE_ARGS="-DGGML_ZDNN=ON" python3 -m pip install --verbose -e .
-
-build.zendnn :
-	CMAKE_ARGS="-DGGML_ZENDNN=ON" python3 -m pip install --verbose -e .
-
-build.sdist:
-	python3 -m build --sdist --verbose
-
-deploy.pypi:
-	python3 -m twine upload dist/*
-
-deploy.gh-docs:
-	mkdocs build
-	mkdocs gh-deploy
+.PHONY: help test check format plan prepare index docker
+help:
+	@echo "make test       Test distribution automation (no model/native build)"
+	@echo "make check      Tests, lint/format checks and basic validation"
+	@echo "make format     Format Python automation and tests"
+	@echo "make plan       Check upstream; optionally set VERSION=X.Y.Z"
+	@echo "make prepare    Download pinned source from work/plan.json"
+	@echo "make index      Generate site/ from releases.json"
+	@echo "make docker     Build CPU server image; requires VERSION=X.Y.Z"
 
 test:
-	python3 -m pytest --full-trace -v
+	$(PYTHON) -m pytest -q
+
+check: test
+	$(PYTHON) -m ruff check .github/scripts docker tests
+	$(PYTHON) -m ruff format --check .github/scripts docker tests
+	$(PYTHON) -m compileall -q .github/scripts docker
+	git diff --check
+
+format:
+	$(PYTHON) -m ruff format .github/scripts docker tests
+
+plan:
+	$(PYTHON) .github/scripts/check_upstream.py --version "$(VERSION)" --output work/plan.json
+
+prepare:
+	$(PYTHON) .github/scripts/prepare_source.py --plan work/plan.json --output work/prepared
+
+index:
+	$(PYTHON) .github/scripts/generate-wheel-index.py releases.json site
 
 docker:
-	docker build -t guanaco-py:latest -f docker/simple/Dockerfile .
-
-run-server:
-	python3 -m llama_cpp.server --model ${MODEL}
-
-clean:
-	- cd vendor/llama.cpp && make clean
-	- cd vendor/llama.cpp && rm libllama.so
-	- rm -rf _skbuild
-	- rm llama_cpp/lib/*.so
-	- rm llama_cpp/lib/*.dylib
-	- rm llama_cpp/lib/*.metal
-	- rm llama_cpp/lib/*.dll
-	- rm llama_cpp/lib/*.lib
-
-.PHONY: \
-	update \
-	update.vendor \
-	build \
-	build.cuda \
-	build.opencl \
-	build.openblas \
-	build.sdist \
-	deploy.pypi \
-	deploy.gh-docs \
-	docker \
-	clean
+	test -n "$(VERSION)"
+	docker build --platform linux/amd64 -f docker/simple/Dockerfile \
+		--build-arg GUANACO_VERSION="$(VERSION)" -t "guanaco-py:$(VERSION)" .

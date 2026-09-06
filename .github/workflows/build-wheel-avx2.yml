@@ -1,102 +1,21 @@
 name: Build AVX2 Wheels
 
-# AVX2-targeted CPU wheels. Kept as a SEPARATE channel from the portable
-# ("cpu") build so both can coexist:
-#
-#   - build-wheel-cpu.yml      -> whl/cpu/    portable x86_64, no SIMD
-#   - build-wheel-avx2.yml     -> whl/avx2/   AVX2/FMA/F16C/SSE4.2/BMI2
-#
-# These wheels require a CPU with AVX2 (Intel Haswell+, AMD Excavator+/Zen+
-# with AVX2, e.g. the Athlon 3000G). They will NOT run on older CPUs without
-# AVX2 - which is the intended trade-off when you do not need to support
-# legacy processors. ggml decides AVX/AVX2/FMA/F16C at *compile* time here
-# (no -march=native, and GGML_NATIVE stays OFF), so the wheel is built for a
-# fixed, reproducible SIMD target and does not depend on the CI runner's CPU.
-
+# Same build/verification pipeline as portable CPU, but with a fixed
+# AVX2/FMA/F16C/SSE4.2/BMI2 target. No -march=native and no duplicated recipe.
 on:
-  workflow_dispatch:
   workflow_call:
+    inputs:
+      version:
+        description: Upstream X.Y.Z prepared by the release workflow
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  build-avx2-x64:
-    name: ${{ matrix.label }} · Py 3.9–3.14
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux-x64
-            label: Linux x64 · AVX2 · manylinux_2_34
-            cibw_archs: x86_64
-            cibw_build: >-
-              cp39-manylinux_x86_64 cp310-manylinux_x86_64
-              cp311-manylinux_x86_64 cp312-manylinux_x86_64
-              cp313-manylinux_x86_64 cp314-manylinux_x86_64
-          - os: windows-latest
-            platform: windows-x64
-            label: Windows x64 · AVX2 · AMD64
-            cibw_archs: AMD64
-            cibw_build: >-
-              cp39-win_amd64 cp310-win_amd64 cp311-win_amd64
-              cp312-win_amd64 cp313-win_amd64 cp314-win_amd64
-
-    steps:
-      - name: Checkout Guanaco and llama.cpp
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-
-      - name: Build and validate AVX2 CPU wheels
-        uses: pypa/cibuildwheel@v3.3.1
-        env:
-          CIBW_BUILD: ${{ matrix.cibw_build }}
-          CIBW_ARCHS: ${{ matrix.cibw_archs }}
-          CIBW_SKIP: "*-musllinux_*"
-          CIBW_BUILD_VERBOSITY: 1
-
-          # Same manylinux policy as the portable CPU build: llama.cpp now uses
-          # C++ symbols newer than manylinux_2_28, so use the 2_34 image whose
-          # system GCC 11 matches the GLIBCXX/CXXABI policy.
-          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_34
-          CIBW_BEFORE_ALL_LINUX: >-
-            dnf install -y gcc gcc-c++ &&
-            /usr/bin/g++ --version
-
-          # AVX2 build: SIMD ON, GPU/backends OFF, native OFF. This is a fixed
-          # -marment target, not -march=native. FMA/F16C are implied by AVX2 on
-          # MSVC but harmless to keep on; SSE4.2 and BMI2 are AVX2-adjacent.
-          CIBW_ENVIRONMENT_LINUX: >-
-            CC=/usr/bin/gcc CXX=/usr/bin/g++
-            CMAKE_ARGS="-DGGML_CUDA=OFF -DGGML_METAL=OFF
-            -DGGML_VULKAN=OFF -DGGML_BLAS=OFF -DGGML_NATIVE=OFF
-            -DGGML_BACKEND_DL=OFF -DGGML_CPU_ALL_VARIANTS=OFF
-            -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON
-            -DGGML_F16C=ON -DGGML_SSE42=ON -DGGML_BMI2=ON"
-          CIBW_ENVIRONMENT_WINDOWS: >-
-            CMAKE_ARGS="-DGGML_CUDA=OFF -DGGML_METAL=OFF
-            -DGGML_VULKAN=OFF -DGGML_BLAS=OFF -DGGML_NATIVE=OFF
-            -DGGML_BACKEND_DL=OFF -DGGML_CPU_ALL_VARIANTS=OFF
-            -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON
-            -DGGML_F16C=ON -DGGML_SSE42=ON -DGGML_BMI2=ON"
-
-          # Show the exact ABI analysis before repair so future policy
-          # failures identify their required symbols in the Actions log.
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
-            auditwheel show {wheel} &&
-            auditwheel repair --plat manylinux_2_34_x86_64
-            -w {dest_dir} {wheel}
-          CIBW_TEST_COMMAND: >-
-            python -c "import importlib.metadata as m; import llama_cpp;
-            assert m.version('guanaco-py') == llama_cpp.__version__;
-            print('guanaco-py', llama_cpp.__version__, 'AVX2 x64 wheel OK')"
-
-      - name: Upload AVX2 CPU x64 wheels
-        uses: actions/upload-artifact@v7
-        with:
-          name: guanaco-py-avx2-${{ matrix.platform }}
-          path: wheelhouse/*.whl
-          if-no-files-found: error
+  avx2:
+    uses: ./.github/workflows/build-wheel-cpu.yml
+    with:
+      version: ${{ inputs.version }}
+      channel: avx2

@@ -1,74 +1,98 @@
-### Install Docker Server
-> [!IMPORTANT]
-> This was tested with Docker running on Linux. <br>If you can get it working on Windows or MacOS, please update this `README.md` with a PR!<br>
+# Docker
 
-[Install Docker Engine](https://docs.docker.com/engine/install)
+Docker support is retained, but the repository no longer contains a package source checkout. Images use a **published Guanaco release**, and a version is required explicitly.
 
+The examples below use `0.3.49`; substitute a version already published by **your Guanaco repository**. The first upstream-release build must finish before these images can fetch its assets.
 
-## Simple Dockerfiles for building the llama-cpp-python server with external model bin files
-### openblas_simple
-A simple Dockerfile for non-GPU OpenBLAS, where the model is located outside the Docker image:
-```
-cd ./openblas_simple
-docker build -t openblas_simple .
-docker run --cap-add SYS_RESOURCE -e USE_MLOCK=0 -e MODEL=/var/model/<model-path> -v <model-root-path>:/var/model -t openblas_simple
-```
-where `<model-root-path>/<model-path>` is the full path to the model file on the Docker host system.
+## CPU (portable or AVX2)
 
---------------------------------------------------------------------------
+Run from the repository root:
 
-### cuda_simple
-
-> [!WARNING]
-> **NVIDIA Container Toolkit**: You must have the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed on the host. The `12.8.1-cudnn-devel-ubuntu22.04` images currently in use generally include the necessary NVCC compilation environment.<br>
-> **VRAM**: Ensure your GPU has enough VRAM to load the model.
-
-A Dockerfile that builds `llama-cpp-python` from source (with CUDA 12.8 support) and runs an OpenAI-compatible API server.
-
-#### 1. Build
-Note: The build process will compile the llama.cpp C++ backend, which may take several tens of minutes.
 ```bash
-cd ./cuda_simple
-docker build -t cuda_simple .
+docker build --platform linux/amd64 \
+  -f docker/simple/Dockerfile \
+  --build-arg GUANACO_VERSION=0.3.49 \
+  --build-arg GUANACO_CHANNEL=cpu \
+  -t guanaco-py:0.3.49 .
+
+docker run --rm -p 8000:8000 \
+  -v /absolute/path/to/models:/models:ro \
+  guanaco-py:0.3.49 --model /models/model.gguf
 ```
-#### 2. Run
+
+Use `GUANACO_CHANNEL=avx2` only on a CPU supporting that instruction set. The default image uses Python 3.12 on Debian Bookworm; override `IMAGE` only with a compatible base and a Python version for which the selected release has a wheel.
+
+The entrypoint directly runs `python -m llama_cpp.server`. There is no `make build`, compiler invocation or implicit source download at startup.
+
+## CUDA
+
+Keep the image's CUDA runtime and wheel channel compatible:
+
 ```bash
-docker run --gpus=all --cap-add SYS_RESOURCE -e USE_MLOCK=0 -e MODEL=/app/models/<model-path> -v /path/to/your/models:/app/models -t cuda_simple
-```
-`--gpus=all`: Enables GPU access.<br>
-`-e MODEL=...`: Specifies the path to the model inside the container.
+docker build --platform linux/amd64 \
+  -f docker/cuda_simple/Dockerfile \
+  --build-arg GUANACO_VERSION=0.3.49 \
+  --build-arg GUANACO_CHANNEL=cu128 \
+  --build-arg CUDA_IMAGE=12.8.1-runtime-ubuntu22.04 \
+  -t guanaco-py:0.3.49-cu128 .
 
---------------------------------------------------------------------------
-
-### "Open-Llama-in-a-box"
-Download an Apache V2.0 licensed 3B params Open LLaMA model and install into a Docker image that runs an OpenBLAS-enabled llama-cpp-python server:
-```
-$ cd ./open_llama
-./build.sh
-./start.sh
+docker run --rm --gpus all -p 8000:8000 \
+  -v /absolute/path/to/models:/models:ro \
+  guanaco-py:0.3.49-cu128 \
+  --model /models/model.gguf --n_gpu_layers -1
 ```
 
-### Manually choose your own Llama model from Hugging Face
-`python3 ./hug_model.py -a TheBloke -t llama`
-You should now have a model in the current directory and `model.bin` symlinked to it for the subsequent Docker build and copy step. e.g.
+Requires a compatible NVIDIA driver and NVIDIA Container Toolkit on the host. Ubuntu 22.04 supplies Python 3.10 for this image. The Dockerfile installs a checksummed CUDA wheel; it does not compile CUDA locally.
+
+## OpenBLAS source-build image
+
+OpenBLAS remains an optional Docker configuration, **not a published wheel channel**:
+
+```bash
+docker build --platform linux/amd64 \
+  -f docker/openblas_simple/Dockerfile \
+  --build-arg GUANACO_VERSION=0.3.49 \
+  -t guanaco-py:0.3.49-openblas .
 ```
-docker $ ls -lh *.bin
--rw-rw-r-- 1 user user 4.8G May 23 18:30 <downloaded-model-file>q5_1.bin
-lrwxrwxrwx 1 user user   24 May 23 18:30 model.bin -> <downloaded-model-file>q5_1.bin
+
+The builder downloads `guanaco-source-0.3.49.tar.gz` and its manifest/checksums from the CPU release. It compiles that pinned, reconstructed source with OpenBLAS. The final image contains the wheel and runtime dependencies, not the source checkout or compiler toolchain. Invoke it with `--model /models/model.gguf` and a model volume as in the CPU example.
+
+## Retained OpenLlama/GGUF convenience image
+
+`docker/open_llama/` is retained, but obsolete interactive `.bin`/GGML downloads and baked-in models are replaced by an explicit GGUF mount:
+
+```bash
+GUANACO_VERSION=0.3.49 sh docker/open_llama/build.sh
+GUANACO_VERSION=0.3.49 MODEL_DIR=/absolute/path/to/models \
+  sh docker/open_llama/start.sh
 ```
 
-> [!NOTE]
-> Make sure you have enough disk space to download the model. As the model is then copied into the image you will need at least
-**TWICE** as much disk space as the size of the model:<br>
+Place a compatible model at `MODEL_DIR/model.gguf`, or run the image yourself with a different `MODEL` environment variable. This convenience image defaults to CPU; use `cuda_simple` for GPU serving.
 
-| Model |  Quantized size |
-|------:|----------------:|
-|    3B |            3 GB |
-|    7B |            5 GB |
-|   13B |           10 GB |
-|   33B |           25 GB |
-|   65B |           50 GB |
+The optional `hug_model.py` helper requires `huggingface-hub` and an explicit repository/filename. It downloads only when invoked by you, never as part of an image build. For reproducibility, provide a pinned Hugging Face revision:
 
+```bash
+python docker/open_llama/hug_model.py OWNER/MODEL MODEL.gguf \
+  --revision COMMIT_SHA --directory models
+```
 
-> [!NOTE]
-> If you want to pass or tune additional parameters, customise `./start_server.sh` before running `docker build ...`
+## Distribution provenance
+
+All Dockerfiles accept `GUANACO_REPOSITORY` (default `TheBigEye/guanaco-py`). `fetch_release.py` constructs the requested channel tag, downloads `SHA256SUMS`, fetches the exact Python/platform asset, and verifies it before installation. There is no fallback to PyPI's `llama-cpp-python` or to upstream `main`.
+
+The Dockerfiles copy the same `download_utils.py` used by CI; the OpenBLAS builder also copies the shared archive extractor. HTTPS reads have bounded retries and size limits. Downloads are verified in a temporary file, so a checksum failure does not replace an existing good file with corrupt data.
+
+The `server` extra and its dependencies follow the selected upstream release. Python dependencies still come from PyPI; pinning the Guanaco wheel is not a lockfile for the complete container environment.
+
+## Automatic GHCR image
+
+After channel releases are published, the main workflow explicitly calls **Build Docker Image**. It builds the CPU image for `linux/amd64` and pushes:
+
+```text
+ghcr.io/thebigeye/guanaco-py:vX.Y.Z
+ghcr.io/thebigeye/guanaco-py:latest
+```
+
+`latest` is updated only when requested by the orchestrator for the newest stable upstream version, or explicitly enabled in a manual Docker run. For another repository owner, the image name follows `GITHUB_REPOSITORY` in lowercase.
+
+The workflow needs `packages: write` and access to an existing GHCR package of that name. If you recreate the GitHub repository, recheck that package's Actions access settings.

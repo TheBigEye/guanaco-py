@@ -1,59 +1,16 @@
-# Define the image argument and provide a default value
-ARG IMAGE=python:3-slim-bookworm
-
-# Use the image as specified
+# Retained convenience image. Mount a GGUF at runtime; do not bake in old GGML models.
+ARG IMAGE=python:3.12-slim-bookworm
 FROM ${IMAGE}
-
-# Re-declare the ARG after FROM
-ARG IMAGE
-
-# Update and upgrade the existing packages
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    ninja-build \
-    build-essential \
-    && apt-get clean \
+ARG GUANACO_VERSION
+ARG GUANACO_CHANNEL=cpu
+ARG GUANACO_REPOSITORY=TheBigEye/guanaco-py
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
-
-RUN python3 -m pip install --upgrade pip pytest cmake scikit-build setuptools fastapi uvicorn sse-starlette pydantic-settings starlette-context
-
-# Copy the source tree into the image first.
-# NOTE: guanaco-py is not on PyPI, it must be installed from this checkout.
-RUN mkdir /app
-WORKDIR /app
-COPY . /app
-
-# Perform the conditional installations based on the image
-RUN echo "Image: ${IMAGE}" && \
-    if [ "${IMAGE}" = "python:3-slim-bookworm" ] ; then \
-    echo "OpenBLAS install:" && \
-    apt-get install -y --no-install-recommends libopenblas-dev && \
-    CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install . --verbose; \
-else \
-    echo "CuBLAS install:" && \
-    CMAKE_ARGS="-DGGML_CUDA=on" pip install . --verbose; \
-fi
-
-# Clean up apt cache
-RUN rm -rf /var/lib/apt/lists/*
-
-# Set a working directory for better clarity
-WORKDIR /app
-
-# Copy files to the app directory
-RUN echo "Installing model...this can take some time..."
-COPY ./model.bin /app/model.bin
-COPY ./start_server.sh /app/start_server.sh
-
-# Make the server start script executable
-RUN chmod +x /app/start_server.sh
-
-# Set environment variable for the host
-ENV HOST=0.0.0.0
-
-# Expose a port for the server
+COPY docker/fetch_release.py .github/scripts/download_utils.py /tmp/
+RUN python /tmp/fetch_release.py wheel --version "${GUANACO_VERSION}" \
+    --channel "${GUANACO_CHANNEL}" --repository "${GUANACO_REPOSITORY}" \
+    && rm -rf /tmp/guanaco-release /tmp/fetch_release.py /tmp/download_utils.py /tmp/__pycache__
+COPY docker/open_llama/start_server.sh /app/start_server.sh
+ENV HOST=0.0.0.0 PORT=8000 MODEL=/models/model.gguf N_GPU_LAYERS=0
 EXPOSE 8000
-
-# Run the server start script
-CMD ["/bin/sh", "/app/start_server.sh"]
+ENTRYPOINT ["/bin/sh", "/app/start_server.sh"]

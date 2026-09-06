@@ -7,7 +7,7 @@ name: Deploy Pages
 #   - Manually, any time, from the Actions tab ("Run workflow").
 #   - Automatically whenever a release is published, edited, or deleted,
 #     so the index always reflects the latest assets.
-#   - workflow_call, so build-release-publish.yaml can reuse this same
+#   - workflow_call, so build-release.yaml can reuse this same
 #     job right after it finishes publishing new wheels.
 
 on:
@@ -37,6 +37,15 @@ jobs:
     steps:
       - name: Checkout index generator
         uses: actions/checkout@v7
+        with:
+          # A release event points at its old recipe tag; render the index
+          # with today's generator rather than silently rolling it back.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
 
       - name: Read GitHub release assets
         run: gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json

@@ -1,43 +1,19 @@
-# Define the base image version with CUDA 12.8 and cuDNN for Ubuntu 22.04
-ARG CUDA_IMAGE="12.8.1-cudnn-devel-ubuntu22.04"
+ARG CUDA_IMAGE=12.8.1-runtime-ubuntu22.04
 FROM nvidia/cuda:${CUDA_IMAGE}
 
-# We need to set the host to 0.0.0.0 to allow outside access
-ENV HOST 0.0.0.0
+ARG GUANACO_VERSION
+ARG GUANACO_CHANNEL=cu128
+ARG GUANACO_REPOSITORY=TheBigEye/guanaco-py
 
-# Install system dependencies:
-RUN apt-get update && apt-get upgrade -y \
-    && apt-get install -y build-essential \
-    ccache cmake curl gcc git wget \
-    python3 python3-pip python3-wheel \
-    libgomp1 libjpeg-dev libssl-dev libcurl4-openssl-dev
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip ca-certificates libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/fetch_release.py .github/scripts/download_utils.py /tmp/
+RUN python3 /tmp/fetch_release.py wheel --version "${GUANACO_VERSION}" \
+    --channel "${GUANACO_CHANNEL}" --repository "${GUANACO_REPOSITORY}" \
+    && rm -rf /tmp/guanaco-release /tmp/fetch_release.py /tmp/download_utils.py /tmp/__pycache__
 
-# Set the working directory for the container
+ENV HOST=0.0.0.0 PORT=8000
 WORKDIR /app
-
-# Copy the current directory contents into the container (useful for local config files or models)
-COPY . .
-
-# Set the target GPU architecture (default allows CMake to auto-detect or use common archs)
-ENV CUDA_DOCKER_ARCH=default
-ENV GGML_CUDA=1
-ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/cuda/compat:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}"
-# Enable verbose build output
-ENV VERBOSE=1
-# Specific CUDA paths to ensure the compiler (nvcc) is found
-ENV CUDA_HOME="/usr/local/cuda/"
-ENV CUDA_PATH="/usr/local/cuda/:${PATH}"
-ENV CUDA_TOOLKIT_ROOT_DIR="/usr/local/cuda/"
-
-# Install Python build tools and server dependencies
-RUN python3 -m pip install --upgrade pip pytest wheel packaging scikit-build setuptools fastapi uvicorn pydantic-settings sse-starlette starlette-context huggingface-hub
-
-# Build from the checkout copied above. The build context must be the repo
-# root with submodules present (clone it with --recursive): guanaco-py is not
-# on PyPI, so `pip install .` compiles it from this tree.
-
-# Install guanaco-py (build with cuda)
-RUN CMAKE_ARGS="-DGGML_CUDA=on -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_DOCKER_ARCH}" pip install .
-
-# Run the server
-CMD python3 -m llama_cpp.server
+EXPOSE 8000
+ENTRYPOINT ["python3", "-m", "llama_cpp.server"]

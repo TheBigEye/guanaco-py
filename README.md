@@ -4,60 +4,79 @@
 
 # Guanaco-py - Python Bindings for [`llama.cpp`](https://github.com/ggml-org/llama.cpp)
 
-**A personal, wheels-first fork of [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python)**
+**A personal, wheels-first distribution of [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python), built from upstream releases instead of a maintained copy of the bindings**
 
 [![Forked from abetlen/llama-cpp-python](https://img.shields.io/badge/forked%20from-abetlen/llama--cpp--python-blue)](https://github.com/abetlen/llama-cpp-python)
 [![Tests](https://github.com/TheBigEye/guanaco-py/actions/workflows/build-testing.yaml/badge.svg?branch=main)](https://github.com/TheBigEye/guanaco-py/actions/workflows/build-testing.yaml)
-[![Github All Releases](https://img.shields.io/github/downloads/TheBigEye/guanaco-py/total.svg?label=Github%20Downloads)]()
+[![Github All Releases](https://img.shields.io/github/downloads/TheBigEye/guanaco-py/total.svg?label=Github%20Downloads)](https://github.com/TheBigEye/guanaco-py/releases)
 
-The bindings you already know, still using `import llama_cpp` and following upstream's API, but **prebuilt and ready to install**, including dedicated wheels for **pure-CPU machines**. Pick the wheel for your hardware, run `pip install`, done: no compiler, no CMake, no rebuilding llama.cpp from source on every machine and every update.
+The bindings you already know, still using `import llama_cpp`, but **prebuilt and ready to install**, including dedicated wheels for **pure-CPU machines**. Pick the wheel for your hardware, run `pip install`, done: no compiler, no CMake, no local rebuild on every machine.
 
 ---
 
 ## Why this repository exists
+
 A bit of context on how we got here:
 
-* **[abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python)** - the original project has not had a release since August 2025, while llama.cpp itself moves forward essentially every day.
-* **[JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python)** is currently the only actively maintained continuation of the bindings. **This repository is updated against that upstream**, so it stays current with modern llama.cpp (new chat templates, GGUF changes, performance work, bug fixes).
-* JamePeng's repository, however, ships **no CPU builds**: its releases carry prebuilt wheels for CUDA and other platforms, but if you run on CPU — as every ordinary PC, laptop and shared box does, installing it means having a compiler toolchain on every machine and sitting through a full CMake build on every install or upgrade.
+* **[abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python)** - the original project these bindings come from.
+* **[JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python)** - the upstream maintained source and release version this distribution follows.
+* Guanaco keeps **CPU portable, CPU AVX2 and CUDA channels separate**. JamePeng's CUDA wheels include CPU backends too; the distinction here is a dedicated CPU-only distribution, not an absence of CPU support upstream.
 
-`guanaco-py` is **[@TheBigEye](https://github.com/TheBigEye)'s personal fork**, maintained for personal use and shared for anyone who finds it useful. It keeps installation simple while leaving room for local changes. This fork's job is:
+`guanaco-py` is **[@TheBigEye](https://github.com/TheBigEye)'s personal distribution**, shared for anyone who finds it useful. Its job is now deliberately narrow:
 
-* **Track JamePeng's upstream**, integrating updates at this fork's own pace rather than maintaining an exact mirror.
-* **Build and publish prebuilt wheels**, and only for two configurations: **CPU and CUDA**. CPU-only wheels are the main focus; CUDA rides along so wheel users can stick to a single, explicit index instead of mixing sources.
-* **Keep focused local adjustments**, including changes to prompt-cache reuse, diagnostic logging and native-library loading. This is not just upstream with a different package name.
+* **Watch upstream releases**, rather than manually sync or patch the bindings.
+* **Download the release's source ZIP and its pinned submodules**, build the existing CPU/AVX2/CUDA matrix, and package it as `guanaco-py`.
+* **Publish channel releases, Docker images and a GitHub Pages wheel index**, keeping the upstream version and release notes.
 
 > [!NOTE]
-> Support is intentionally limited to **CPU and CUDA** builds (no prebuilt Metal, Vulkan, HIP/ROCm, SYCL, RPC, or macOS/ARM wheels). That narrow focus is not a lack of ambition, it is what keeps the builds tested, reliable and publishable on time instead of rotting across a giant untested matrix. The source tree can still build those backends the same way upstream does; there just won't be prebuilt wheels for them here.
-
-> [!IMPORTANT]
-> If you need Metal, macOS, or other backends beyond CPU/CUDA, use the upstream repositories directly: [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python) (actively maintained) or [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python) (the original). Many thanks to **Andrei Betlen** for the original work!
+> There is no `llama_cpp/`, `vendor/llama.cpp`, package `pyproject.toml` or CMake project checked into this repository. The source exists only in temporary build directories and reconstructed source archives attached to releases. This repository itself is **not pip-installable**.
 
 ### Versioning & upstream relationship
 
-This is a personal repository, **not an official upstream distribution or a promise of lockstep updates**.
+* **The package version comes from upstream.** If JamePeng releases `X.Y.Z`, these wheels use `guanaco-py==X.Y.Z` and retain `llama_cpp.__version__ == "X.Y.Z"`. No independent Guanaco version bump is needed.
+* **Tags identify our build channels.** `vX.Y.Z` is portable CPU, `vX.Y.Z-avx2` is AVX2, and `vX.Y.Z-cu124` is CUDA 12.4. The upstream tag may include a backend, OS and date; it is recorded in the release notes and manifest, not mistaken for a separate package version.
+* **Releases, not `main`.** A new upstream backend tag or a commit on `main` does not rebuild an already complete `X.Y.Z`. Fixes that have not reached the selected release are intentionally not included.
+* **Distribution metadata changes; binding code does not.** The name, self-referencing extras, package links, license inclusion and native build identity are adapted automatically. The Python source is checked byte-for-byte against the downloaded release. Logger names and other upstream identifiers stay upstream's.
 
-* **Versions are independent.** Guanaco's package version (`llama_cpp.__version__`), tags and releases belong to this fork; they do not map one-to-one to JamePeng's versions. A higher number here does not imply a newer upstream API or feature parity.
-* **Backend suffixes identify builds, not upstream versions.** `vX.Y.Z` is the portable CPU release, `vX.Y.Z-avx2` the AVX2 build, and `vX.Y.Z-cu124` a CUDA build. The Python package version remains `X.Y.Z`; the wheel index selects the backend.
-* **Updates and releases follow this fork's needs.** `main` can be ahead of the published wheels. For reproducible installs, pin a Guanaco version and its wheel channel; when comparing with upstream, check the [release notes](https://github.com/TheBigEye/guanaco-py/releases), [included commits](https://github.com/TheBigEye/guanaco-py/commits/main/) and the `vendor/llama.cpp` revision, not just the version number.
+> [!IMPORTANT]
+> This is not an official upstream distribution, nor a promise of identical behavior on every backend. Compile options differ. Both distributions install `llama_cpp`: use separate environments when comparing them. `guanaco-py` does not satisfy a dependency explicitly named `llama-cpp-python`.
+
+## How releases are built
+
+Every day at **07:00 Argentina time** (`10:00 UTC`), [Check Upstream and Release](.github/workflows/build-release.yaml):
+
+1. Lists upstream releases, ignores drafts/prereleases, and compares **numeric `X.Y.Z` versions** across their backend tags.
+2. Selects the latest stable version, or the explicit version requested in a manual run. The first run builds the latest version, not the entire historical catalog.
+3. Checks provenance, assets and Git tags. Complete channels are left alone; a partial family keeps its source, notes and build matrix frozen for retries.
+4. Downloads the source ZIP at the **resolved commit SHA**, then resolves and downloads the exact Git submodule commits. It never substitutes `main` for a missing source revision.
+5. Adapts packaging metadata once and shares the checksummed source snapshot. Builders check wheel identity, ABI/platform tags, `WHEEL`/`RECORD`, file hashes, native headers, licenses and unchanged Python code.
+6. Checks validation receipts for the **entire requested matrix** before any publication. Publishers download one channel each, recheck its binaries, then upload to **draft releases** and verify the uploads before making them public.
+7. Explicitly runs the Pages and Docker workflows. Releases created with `GITHUB_TOKEN` do not automatically trigger other release-event workflows.
+
+Each channel includes the original upstream release-note text, provenance, `guanaco-build.json` and `SHA256SUMS`. The CPU release also includes `guanaco-source-X.Y.Z.tar.gz` and `packaging.patch`.
+
+> [!NOTE]
+> GitHub may start scheduled jobs late. Schedules run on the default branch and can be disabled after repository inactivity. This removes manual binding synchronization, **not** the occasional need to maintain compilers, dependencies and build workflows when upstream changes its requirements.
+
+See [Automation & maintenance](docs/automation.md) for selection rules, retry behavior, permissions and the first-run checklist.
 
 ## Installation
 
-Wheels are served from a small [PEP 503 index hosted on GitHub Pages](https://thebigeye.github.io/guanaco-py/whl/) - plain PyPI is not, and will never be, an option (see the last section for why).
+Wheels are served through the [GitHub Pages PEP 503 index](https://thebigeye.github.io/guanaco-py/whl/), backed by GitHub release assets. They are not published to PyPI.
 
 ### Choosing your wheel
 
-Pick **one** channel, the one matching your hardware, and install:
+Pick **one** channel matching your hardware:
 
 | Hardware | Channel | Index |
 |---|---|---|
-| **CPU, portable** (runs on any x86-64) | `cpu` | `https://thebigeye.github.io/guanaco-py/whl/cpu/` |
-| **CPU, AVX2** (most CPUs since ~2013) | `avx2` | `https://thebigeye.github.io/guanaco-py/whl/avx2/` |
+| **CPU, portable** (x86-64 without an AVX2 requirement) | `cpu` | `https://thebigeye.github.io/guanaco-py/whl/cpu/` |
+| **CPU, AVX2** | `avx2` | `https://thebigeye.github.io/guanaco-py/whl/avx2/` |
 | **CUDA 12.1 / 12.2 / 12.3 / 12.4** | `cu121` – `cu124` | `https://thebigeye.github.io/guanaco-py/whl/cu121/` … |
 | **CUDA 12.6 / 12.8 / 13.1** | `cu126` / `cu128` / `cu131` | `https://thebigeye.github.io/guanaco-py/whl/cu126/` … |
 
 > [!IMPORTANT]
-> In all cases, append `--extra-index-url https://pypi.org/simple` so pip can still fetch the pure-Python dependencies (`numpy`, `jinja2`, `diskcache`, ...) from PyPI. The GitHub Pages index only carries `guanaco-py` itself.
+> Append `--extra-index-url https://pypi.org/simple` so pip can fetch dependencies (`numpy`, `jinja2`, `diskcache`, ...). The Guanaco index only carries `guanaco-py`. Run the initial release workflow before expecting wheels in a newly created repository.
 
 **CPU (portable):**
 
@@ -76,7 +95,7 @@ pip install guanaco-py \
 ```
 
 > [!WARNING]
-> The AVX2 wheels require a CPU with **AVX2** support (Intel Haswell+, AMD Excavator+/Zen+). They will crash with an illegal instruction on the first inference if your processor is older. To check beforehand: run `grep -m1 avx2 /proc/cpuinfo` on Linux; on Windows, *Task Manager → Performance → CPU* (or CPU-Z). When in doubt, use the portable `cpu` channel, it always works.
+> AVX2 wheels require AVX2/FMA/F16C/SSE4.2/BMI2 support. Using an incompatible wheel can cause an illegal-instruction crash. When in doubt, choose portable `cpu`.
 
 **CUDA:**
 
@@ -87,43 +106,40 @@ pip install guanaco-py \
   --extra-index-url https://pypi.org/simple
 ```
 
-Where the CUDA version in the URL is one of `cu121`, `cu122`, `cu123`, `cu124`, `cu126`, `cu128` or `cu131` (CUDA 12.1, 12.2, 12.3, 12.4, 12.6, 12.8 and 13.1 respectively). Matching your installed CUDA toolkit's major.minor is what matters; you can check yours with `nvidia-smi`.
+Choose a supported CUDA channel and a compatible NVIDIA driver/runtime. `nvidia-smi` reports the driver's CUDA compatibility, not necessarily the locally installed toolkit version.
 
 > [!NOTE]
-> All wheels are built for **x86-64 only**, for both **Windows** and **Linux**. Linux wheels use the `manylinux_2_34_x86_64` policy, i.e. they need glibc ≥ 2.34 (Ubuntu 22.04+, Debian 12+, Fedora 35+, and anything newer). Every supported build covers **CPython 3.9 through 3.14**.
+> The configured matrix targets **Windows and Linux x86-64**, **CPython 3.9–3.14**. CPU/AVX2 Linux wheels use `manylinux_2_34_x86_64` (glibc ≥ 2.34). CUDA Linux wheels are built on Ubuntu 22.04 and tagged `linux_x86_64`; they are **not** advertised as manylinux-certified. No prebuilt Metal, macOS/ARM, Vulkan, ROCm or SYCL wheels are provided here.
 
-> [!TIP]
-> Occasionally pip resolves its own cached indexes and claims there is no matching wheel. Adding `--only-binary=:all:` nudges it to pick the wheel from the custom index:
-> `pip install guanaco-py --only-binary=:all: --index-url https://thebigeye.github.io/guanaco-py/whl/cpu/`
-
-**Upgrading:** run the same command with `-U`. Every historical version stays published on the index, so pinned environments keep working.
+**Upgrading:** use the same channel with `-U`. To pin an environment, use `guanaco-py==X.Y.Z` with that channel's index. Completed managed releases remain in the generated index; legacy personal-fork builds are intentionally not mixed into this version line.
 
 <details>
-<summary>Installing from a release tag (git source)</summary>
+<summary>Moving from the old personal-fork versions</summary>
 
-If you need a source build (custom `CMAKE_ARGS`, other backends, bleeding edge), install straight from git, this compiles llama.cpp locally, so you need a C compiler and CMake 3.21+:
+The old `1.x` versions and upstream's `0.3.x` versions are different numbering schemes. `pip install -U` will not necessarily downgrade an existing environment. Prefer a new virtual environment, or uninstall the old distribution and install an explicit published upstream-aligned version.
 
-```bash
-pip install -U "guanaco-py @ git+https://github.com/TheBigEye/guanaco-py.git"
-```
+Do not keep both `guanaco-py` and `llama-cpp-python` installed in the same environment: they share `llama_cpp`.
 
-or pinned to a release, for example `v0.5.0`:
+</details>
 
-```bash
-pip install -U git+https://github.com/TheBigEye/guanaco-py@v0.5.0
-```
+<details>
+<summary>Installing from source</summary>
+
+Do **not** use `pip install git+https://github.com/TheBigEye/guanaco-py.git`: this repo now contains build recipes, not the package source.
+
+Download `guanaco-source-X.Y.Z.tar.gz` and `SHA256SUMS` from the **CPU release** `vX.Y.Z`, verify the archive checksum, extract it into an empty directory, and run `pip install .` there. The archive already contains the pinned submodules and adjusted Guanaco metadata. A C/C++ compiler and CMake are still required for a source build.
+
+GitHub's automatically generated "Source code (zip)" for a **Guanaco** tag contains these build recipes; it is not the reconstructed bindings source archive.
 
 </details>
 
 <details>
 <summary>Installing with uv</summary>
 
-The same indexes work with `uv pip` using `--index-url`, or declared once in `pyproject.toml`:
-
 ```toml
 [[tool.uv.index]]
 name = "guanaco-cpu"
-url = "https://thebigeye.github.io/guanaco-py/whl/avx2/"
+url = "https://thebigeye.github.io/guanaco-py/whl/cpu/"
 explicit = true
 
 [tool.uv.sources]
@@ -152,57 +168,42 @@ response = llm.create_chat_completion(
 print(response["choices"][0]["message"]["content"])
 ```
 
-Everything else, plain text completion, chat formats, grammars/JSON mode, embeddings, speculative decoding, function calling, the low-level `ctypes` API, follows upstream's interfaces. Local adjustments and different release timing still apply: do not assume identical behavior in every release, or that a feature on upstream's `main` is already in a published Guanaco wheel.
-
 ### Documentation & wiki
 
-For the shared APIs and features, start with **JamePeng's upstream documentation** rather than a separate copy in this repository:
+For the bindings' APIs and features, use **JamePeng's upstream documentation**:
 
-* **[Documentation index](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/index.md)** - the source-aligned guides maintained under upstream's `docs/wiki`.
+* **[Documentation index](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/index.md)** - source-aligned guides under `docs/wiki`.
 * **[GitHub Wiki](https://github.com/JamePeng/llama-cpp-python/wiki)** - upstream's wiki entry point.
-* **[Llama API reference](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/core/Llama.md)**, **[source-build guide](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/install.md)** and **[examples](https://github.com/JamePeng/llama-cpp-python/tree/main/examples)** - API usage, backend configuration and runnable examples.
-* **[Discussions](https://github.com/JamePeng/llama-cpp-python/discussions)** - upstream feature announcements, usage notes and community discussions.
+* **[Llama API reference](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/core/Llama.md)**, **[source-build guide](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/install.md)** and **[examples](https://github.com/JamePeng/llama-cpp-python/tree/main/examples)**.
+* **[Discussions](https://github.com/JamePeng/llama-cpp-python/discussions)** - feature announcements and usage notes.
 
 > [!NOTE]
-> These pages describe **JamePeng's upstream**, including its package name, version numbers and builds. For Guanaco installation, wheel channels and local differences, use this README and [this fork's releases](https://github.com/TheBigEye/guanaco-py/releases). The [original project's documentation](https://llama-cpp-python.readthedocs.io/en/latest/) remains a useful reference, but may not cover newer upstream features or Guanaco-specific changes.
+> Documentation on upstream's `main` may describe features newer than your installed release. For Guanaco's package name, wheel channels and builds, use this README and the matching release manifest. The [original project's documentation](https://llama-cpp-python.readthedocs.io/en/latest/) remains a useful complementary reference.
 
-## The server module will be removed
+## Docker & server
 
-> [!CAUTION]
-> **Heads up:** the bundled OpenAI-compatible web server (`llama_cpp.server`) will be **removed entirely** in a future release.
+Docker support stays. The default CPU and CUDA images install a **version-pinned, checksummed Guanaco release wheel**, not a checkout, and do not compile anything at startup.
 
-The server is a poor fit for a wheels-only distribution: it drags in a whole web-framework dependency stack (`fastapi`, `uvicorn`, `pydantic-settings`, ...) that most callers never use, and it duplicates a job that dedicated servers already do better.
-
-If you serve models over HTTP today, plan accordingly:
-
-* **Pin your current version** while you need the embedded server, or
-* **Migrate to [llama.cpp's own server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server)**, which is the better-maintained OpenAI-compatible endpoint and also ships prebuilt binaries.
-
-This notice is the deprecation window: the current release still ships the server module, but it will disappear with a future version bump.
-
-## Why is it not on PyPI (and never will be)?
-
-Not a limitation, a deliberate and permanent choice, for three reasons that cannot be fixed on PyPI's side:
-
-1. **pip cannot pick a backend for you.**
-   PyPI has no notion of "this machine has CUDA 12.4" or "this CPU lacks AVX2". A package on PyPI means exactly one default build per platform, so GPU users would silently download the CPU build (hundreds of extra megabytes) and wonder why nothing is fast. Per-backend indexes make that choice **explicit**, and impossible to get wrong by accident.
-
-2. **CUDA wheels do not fit PyPI's limits in practice.**
-   PyPI caps file sizes at 100 MB by default, with raises granted case-by-case. A CUDA-version x Python-version wheel matrix is exactly the workload those caps are not sized for, it's the same reason PyTorch, JAX and every serious CUDA project self-host their package indexes. Publishing only the small CPU wheels on PyPI would just recreate the problem as two diverging install paths for the same package.
-
-3. **This index *is* the product.**
-   The whole point of `guanaco-py` is that the right wheel for your hardware is one explicit line away, and stays installable forever, because old versions are never pruned. A partial PyPI entry would only add a slower, more confusing second door, and would attract bug reports against a build that does not represent this repository.
-
-> [!TIP]
-> If `pip install guanaco-py` fails on your machine, the answer is never "wait for PyPI" - it is "point pip at the index shown in [Installation](#installation)".
+The bundled `llama_cpp.server` follows upstream. Guanaco no longer carries a separate plan to remove it: install the `server` extra when you need it. See [Docker instructions](docker/README.md) for CPU, CUDA, OpenBLAS and the retained GGUF convenience image.
 
 ## Development
 
-This personal repository integrates updates from [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python), keeps its own versioning and local patches, and builds the wheel matrix in CI. Issues and PRs about **packaging, wheels, documentation and Guanaco-specific behavior** are welcome here. Include the Guanaco version, wheel channel and a minimal reproducer when reporting a problem; only report it to [JamePeng's repo](https://github.com/JamePeng/llama-cpp-python) or [llama.cpp](https://github.com/ggml-org/llama.cpp) after reproducing it with the corresponding upstream project.
+Changes here should focus on **build recipes, packaging, release automation, Docker and the wheel index**. Binding fixes belong upstream; no local runtime patch queue is maintained.
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+python -m ruff check .github/scripts docker tests
+python -m ruff format --check .github/scripts docker tests
+```
+
+The supported toolchain matrix is in [`.github/build-matrix.json`](.github/build-matrix.json). Offline tests cover the automation on Python 3.9, 3.13 and 3.14 in CI, with lint/format checks and an 85% coverage floor. CPU and AVX2 share one parametrized builder. Wheel jobs validate package contents, and CPU/AVX2 jobs import the installed wheel and call its native API. CUDA jobs validate wheel contents but do not claim GPU inference coverage on GPU-less runners.
 
 ## License & credits
 
 * [MIT](LICENSE.md)
-* [llama.cpp](https://github.com/ggml-org/llama.cpp) - the inference engine these bindings wrap, by [@ggerganov](https://github.com/ggerganov) and contributors
-* [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python) - the original project these bindings come from Andrei Betlen
-* [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python) - the actively maintained upstream this repository tracks
+* [llama.cpp](https://github.com/ggml-org/llama.cpp) - the inference engine, by [@ggerganov](https://github.com/ggerganov) and contributors
+* [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python) - the original bindings, by Andrei Betlen
+* [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python) - the upstream source, versioning and release notes this distribution follows
+
+Upstream copyright and license notices are retained in the source archives and included in the wheels.

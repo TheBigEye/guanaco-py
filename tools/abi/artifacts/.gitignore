@@ -1,4 +1,0 @@
-# Keep downloaded or locally built native libraries out of Git.
-*
-!.gitignore
-!README.md

@@ -2,58 +2,62 @@ name: Build Docker Image
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Published Guanaco/upstream X.Y.Z"
+        type: string
+        required: true
+      promote_latest:
+        description: "Also update the latest image tag"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      promote_latest:
+        type: boolean
+        default: false
 
-  release:
-    types: [published]
+permissions:
+  contents: read
+  packages: write
 
+concurrency:
+  group: guanaco-docker
+  cancel-in-progress: false
 
 jobs:
-  # Build and push Docker image
   docker:
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      # Checkout repository
-      - name: Checkout
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
-          submodules: recursive
-
-      # Set up QEMU and Docker Buildx
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to GHCR
-        uses: docker/login-action@v4.6.0
+          persist-credentials: false
+      - name: Validate version and resolve image tags
+        id: image
+        env:
+          VERSION: ${{ inputs.version }}
+          PROMOTE_LATEST: ${{ inputs.promote_latest }}
+        run: python .github/scripts/configure_build.py docker
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract version
-        id: version
-        run: |
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=latest" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build and push
+          password: ${{ github.token }}
+      - name: Build from the already published, checksummed CPU wheel
         uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/simple/Dockerfile
-
-          # Currently only building for linux/amd64, due to ARM issues with some dependencies
           platforms: linux/amd64
-
           push: true
-          tags: |
-            ghcr.io/thebigeye/guanaco-py:latest
-            ghcr.io/thebigeye/guanaco-py:${{ steps.version.outputs.tag }}
+          tags: ${{ steps.image.outputs.tags }}
+          build-args: |
+            GUANACO_VERSION=${{ inputs.version }}
+            GUANACO_REPOSITORY=${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -1,83 +1,52 @@
-name: Build and Testing
+name: Test Distribution Automation
 
 on:
   pull_request:
-    branches:
-      - main
   push:
-    branches:
-      - dev
-      - main
+    branches: [main, dev]
+  workflow_dispatch:
 
-# Auto-cancel stale runs on the same PR/branch
+permissions:
+  contents: read
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: automation-tests-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  REPO_ID: Qwen/Qwen2-0.5B-Instruct-GGUF
-  MODEL_FILE: qwen2-0_5b-instruct-q8_0.gguf
-  HF_HOME: ${{ github.workspace }}/hf_cache
-
 jobs:
-  # Combined job for Linux and Windows using a matrix strategy
-  build-and-test:
+  tests:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
-      # Don't cancel other jobs in the matrix if one fails
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
-
+        python: ["3.9", "3.13", "3.14"]
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
-          submodules: "recursive"
-
-      - name: Install uv and set the python version
-        uses: astral-sh/setup-uv@v7
+          persist-credentials: false
+      - uses: actions/setup-python@v6
         with:
-          enable-cache: true
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Cache HuggingFace model
-        id: model-cache
-        uses: actions/cache@v6
-        with:
-          path: ${{ env.HF_HOME }}
-          key: ${{ runner.os }}-model-${{ env.REPO_ID }}-${{ env.MODEL_FILE }}
-
-      - name: Download model if not cached
-        # Only run this step if the cache was not found
-        if: steps.model-cache.outputs.cache-hit != 'true'
-        env:
-          UV_NO_LINK_MODE: copy
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Lint and formatting
         run: |
-          uv pip install --system huggingface-hub
-          hf download ${{ env.REPO_ID }} ${{ env.MODEL_FILE }}
-        shell: bash
+          python -m ruff check .github/scripts docker tests
+          python -m ruff format --check .github/scripts docker tests
+      - name: Test policy, archives, wheels, publication and workflow contracts
+        run: python -m pytest -q --cov=.github/scripts --cov=docker --cov=docker/open_llama --cov-report=term-missing --cov-fail-under=85
+      - run: python -m compileall -q .github/scripts docker
+      - run: git diff --check
 
-      - name: Install dependencies and build CPU backend
-        env:
-          CMAKE_ARGS: >-
-            -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF
-            -DGGML_BLAS=OFF -DGGML_NATIVE=OFF
-          UV_NO_LINK_MODE: copy
-        run: uv pip install --system -e .[all] --verbose
-        shell: bash
-
-      - name: System Info and Version
-        run: |
-          python -c "import platform; print('Machine:', platform.machine(), 'Arch:', platform.architecture())"
-          python -c "import llama_cpp; print('guanaco-py:', llama_cpp.__version__)"
-        shell: bash
-
-      - name: Test with pytest by Python ${{ matrix.python-version }}
-        run: python -m pytest
-        shell: bash
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Validate GitHub Actions workflows
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color
