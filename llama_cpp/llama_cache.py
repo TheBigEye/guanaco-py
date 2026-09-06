@@ -95,16 +95,21 @@ class LlamaDiskCache(BaseLlamaCache):
         return min_key
 
     def __getitem__(self, key: Sequence[int]) -> "llama_core.LlamaState":
-        print("LlamaDiskCache.__getitem__: called", file=sys.stderr)
         if len(self.cache) == 0:
+            if self.verbose:
+                print("LlamaDiskCache.__getitem__: cache is empty", file=sys.stderr)
             raise KeyError("Cache is empty")
 
         key = tuple(key)
         _key = self._find_longest_prefix_key(key)
         if _key is None:
+            if self.verbose:
+                print("LlamaDiskCache.__getitem__: miss", file=sys.stderr)
             raise KeyError("Key not found")
         # Non-destructive read: automatically updates access time for LRU
         value: "llama_core.LlamaState" = self.cache[_key]  # type: ignore
+        if self.verbose:
+            print("LlamaDiskCache.__getitem__: hit", file=sys.stderr)
         return value
 
     def __contains__(self, key: Sequence[int]) -> bool:
@@ -113,7 +118,8 @@ class LlamaDiskCache(BaseLlamaCache):
         return self._find_longest_prefix_key(tuple(key)) is not None
 
     def __setitem__(self, key: Sequence[int], value: "llama_core.LlamaState"):
-        print("LlamaDiskCache.__setitem__: called", file=sys.stderr)
+        if self.verbose:
+            print("LlamaDiskCache.__setitem__: stored", file=sys.stderr)
         # diskcache natively handles capacity check and eviction upon assignment
         self.cache[tuple(key)] = value
 
