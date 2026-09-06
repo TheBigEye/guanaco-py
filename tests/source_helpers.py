@@ -44,3 +44,12 @@ def zip_source(path, files):
     with zipfile.ZipFile(path, "w") as archive:
         for name, data in files.items():
             archive.writestr("repo-sha/" + name, data)
+
+
+def raw_zip_member(name: str) -> zipfile.ZipInfo:
+    """Keep adversarial ZIP names identical on every test host."""
+    member = zipfile.ZipInfo()
+    # ZipInfo(name) would replace backslashes on Windows and truncate NULs.
+    # Set both fields afterwards so the ZIP really contains the requested name.
+    member.filename = member.orig_filename = name
+    return member

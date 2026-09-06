@@ -2,6 +2,7 @@ import io
 import json
 import stat
 import tarfile
+from types import SimpleNamespace
 
 try:
     import tomllib
@@ -13,7 +14,7 @@ import pytest
 from helpers import SHA_A, SHA_B, plan
 from prepare_source import adapt_metadata, extract_zip, materialize, runtime_hashes, source_tar
 from release_common import sha256
-from source_helpers import METADATA, fixture_source, zip_source
+from source_helpers import METADATA, fixture_source, raw_zip_member, zip_source
 from unpack_source import unpack
 
 
@@ -85,7 +86,9 @@ def test_recursive_submodules_use_the_gitlink_commit_not_main(tmp_path):
 def test_zip_rejects_unsafe_paths(tmp_path, path):
     archive = tmp_path / "source.zip"
     with zipfile.ZipFile(archive, "w") as z:
-        z.writestr(path, "bad")
+        z.writestr(raw_zip_member(path), "bad")
+    with zipfile.ZipFile(archive) as z:
+        assert z.infolist()[0].orig_filename == path
     with pytest.raises(ValueError, match="Unsafe"):
         extract_zip(archive, tmp_path / "dest")
 
@@ -152,3 +155,36 @@ def test_tar_rejects_traversal_even_with_a_matching_checksum(tmp_path):
     )
     with pytest.raises(ValueError, match="Unsafe"):
         unpack(artifact, tmp_path / "output")
+
+
+@pytest.fixture(params=["/", "\\"], ids=["posix-names", "windows-names"])
+def zip_name_rules(request, monkeypatch):
+    """Exercise ZipInfo's host-specific normalization, not a Windows OS emulation."""
+    proxy = SimpleNamespace(**vars(zipfile.os))
+    proxy.sep = request.param
+    monkeypatch.setattr(zipfile, "os", proxy)
+    return request.param
+
+
+@pytest.mark.parametrize("name", [r"root/a\b", "root/a\x00hidden"])
+def test_zip_checks_original_names_before_normalization(tmp_path, zip_name_rules, name):
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr(raw_zip_member(name), b"payload")
+    with zipfile.ZipFile(archive) as z:
+        member = z.infolist()[0]
+        assert member.orig_filename == name
+        assert member.filename == name.split("\x00", 1)[0].replace(zip_name_rules, "/")
+    destination = tmp_path / "dest"
+    with pytest.raises(ValueError, match="Unsafe"):
+        extract_zip(archive, destination)
+    assert not destination.exists()
+
+
+def test_zip_keeps_safe_nested_paths_with_either_name_rule(tmp_path, zip_name_rules):
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("root/a/b.txt", b"safe contents")
+    destination = tmp_path / "dest"
+    extract_zip(archive, destination)
+    assert (destination / "a/b.txt").read_bytes() == b"safe contents"
