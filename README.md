@@ -4,13 +4,13 @@
 
 # Guanaco-py - Python Bindings for [`llama.cpp`](https://github.com/ggml-org/llama.cpp)
 
-**A simplified, wheels-first fork, kept in sync with [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python)**
+**A personal, wheels-first fork of [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python)**
 
 [![Forked from abetlen/llama-cpp-python](https://img.shields.io/badge/forked%20from-abetlen/llama--cpp--python-blue)](https://github.com/abetlen/llama-cpp-python)
 [![Tests](https://github.com/TheBigEye/guanaco-py/actions/workflows/build-testing.yaml/badge.svg?branch=main)](https://github.com/TheBigEye/guanaco-py/actions/workflows/build-testing.yaml)
 [![Github All Releases](https://img.shields.io/github/downloads/TheBigEye/guanaco-py/total.svg?label=Github%20Downloads)]()
 
-The bindings you already know `import llama_cpp`, API-compatible with upstream but **prebuilt and ready to install**, including on **pure-CPU machines**, the one configuration upstream does not publish wheels for. Pick the wheel for your hardware, run `pip install`, done: no compiler, no CMake, no rebuilding llama.cpp from source on every machine and every update.
+The bindings you already know, still using `import llama_cpp` and following upstream's API, but **prebuilt and ready to install**, including dedicated wheels for **pure-CPU machines**. Pick the wheel for your hardware, run `pip install`, done: no compiler, no CMake, no rebuilding llama.cpp from source on every machine and every update.
 
 ---
 
@@ -21,16 +21,25 @@ A bit of context on how we got here:
 * **[JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python)** is currently the only actively maintained continuation of the bindings. **This repository is updated against that upstream**, so it stays current with modern llama.cpp (new chat templates, GGUF changes, performance work, bug fixes).
 * JamePeng's repository, however, ships **no CPU builds**: its releases carry prebuilt wheels for CUDA and other platforms, but if you run on CPU — as every ordinary PC, laptop and shared box does, installing it means having a compiler toolchain on every machine and sitting through a full CMake build on every install or upgrade.
 
-`guanaco-py` exists to simplify exactly that, and deliberately nothing more. This fork's job is:
+`guanaco-py` is **[@TheBigEye](https://github.com/TheBigEye)'s personal fork**, maintained for personal use and shared for anyone who finds it useful. It keeps installation simple while leaving room for local changes. This fork's job is:
 
-* **Track JamePeng's upstream**, keeping the bindings current with llama.cpp.
-* **Build and publish prebuilt wheels**, and only for two configurations: **CPU and CUDA**. CPU is the gap upstream leaves; CUDA rides along so wheel users can stick to a single, explicit index instead of mixing sources.
+* **Track JamePeng's upstream**, integrating updates at this fork's own pace rather than maintaining an exact mirror.
+* **Build and publish prebuilt wheels**, and only for two configurations: **CPU and CUDA**. CPU-only wheels are the main focus; CUDA rides along so wheel users can stick to a single, explicit index instead of mixing sources.
+* **Keep focused local adjustments**, including changes to prompt-cache reuse, diagnostic logging and native-library loading. This is not just upstream with a different package name.
 
 > [!NOTE]
 > Support is intentionally limited to **CPU and CUDA** builds (no prebuilt Metal, Vulkan, HIP/ROCm, SYCL, RPC, or macOS/ARM wheels). That narrow focus is not a lack of ambition, it is what keeps the builds tested, reliable and publishable on time instead of rotting across a giant untested matrix. The source tree can still build those backends the same way upstream does; there just won't be prebuilt wheels for them here.
 
 > [!IMPORTANT]
 > If you need Metal, macOS, or other backends beyond CPU/CUDA, use the upstream repositories directly: [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python) (actively maintained) or [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python) (the original). Many thanks to **Andrei Betlen** for the original work!
+
+### Versioning & upstream relationship
+
+This is a personal repository, **not an official upstream distribution or a promise of lockstep updates**.
+
+* **Versions are independent.** Guanaco's package version (`llama_cpp.__version__`), tags and releases belong to this fork; they do not map one-to-one to JamePeng's versions. A higher number here does not imply a newer upstream API or feature parity.
+* **Backend suffixes identify builds, not upstream versions.** `vX.Y.Z` is the portable CPU release, `vX.Y.Z-avx2` the AVX2 build, and `vX.Y.Z-cu124` a CUDA build. The Python package version remains `X.Y.Z`; the wheel index selects the backend.
+* **Updates and releases follow this fork's needs.** `main` can be ahead of the published wheels. For reproducible installs, pin a Guanaco version and its wheel channel; when comparing with upstream, check the [release notes](https://github.com/TheBigEye/guanaco-py/releases), [included commits](https://github.com/TheBigEye/guanaco-py/commits/main/) and the `vendor/llama.cpp` revision, not just the version number.
 
 ## Installation
 
@@ -143,10 +152,19 @@ response = llm.create_chat_completion(
 print(response["choices"][0]["message"]["content"])
 ```
 
-Everything else, plain text completion, chat formats, grammars/JSON mode, embeddings, speculative decoding, function calling, the low-level `ctypes` API, works exactly the same as upstream, because it *is* the same code.
+Everything else, plain text completion, chat formats, grammars/JSON mode, embeddings, speculative decoding, function calling, the low-level `ctypes` API, follows upstream's interfaces. Local adjustments and different release timing still apply: do not assume identical behavior in every release, or that a feature on upstream's `main` is already in a published Guanaco wheel.
+
+### Documentation & wiki
+
+For the shared APIs and features, start with **JamePeng's upstream documentation** rather than a separate copy in this repository:
+
+* **[Documentation index](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/index.md)** - the source-aligned guides maintained under upstream's `docs/wiki`.
+* **[GitHub Wiki](https://github.com/JamePeng/llama-cpp-python/wiki)** - upstream's wiki entry point.
+* **[Llama API reference](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/core/Llama.md)**, **[source-build guide](https://github.com/JamePeng/llama-cpp-python/blob/main/docs/wiki/install.md)** and **[examples](https://github.com/JamePeng/llama-cpp-python/tree/main/examples)** - API usage, backend configuration and runnable examples.
+* **[Discussions](https://github.com/JamePeng/llama-cpp-python/discussions)** - upstream feature announcements, usage notes and community discussions.
 
 > [!NOTE]
-> Documentation is currently shared with the original project: [https://llama-cpp-python.readthedocs.io/en/latest](https://llama-cpp-python.readthedocs.io/en/latest). As this fork diverges further, separate documentation may be created.
+> These pages describe **JamePeng's upstream**, including its package name, version numbers and builds. For Guanaco installation, wheel channels and local differences, use this README and [this fork's releases](https://github.com/TheBigEye/guanaco-py/releases). The [original project's documentation](https://llama-cpp-python.readthedocs.io/en/latest/) remains a useful reference, but may not cover newer upstream features or Guanaco-specific changes.
 
 ## The server module will be removed
 
@@ -180,7 +198,7 @@ Not a limitation, a deliberate and permanent choice, for three reasons that cann
 
 ## Development
 
-This repository periodically syncs from [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python) and builds the wheel matrix in CI. Issues and PRs about **packaging, wheels and documentation** are welcome here; bugs in the bindings' behavior or in model inference should be reported to [JamePeng's repo](https://github.com/JamePeng/llama-cpp-python) or to [llama.cpp](https://github.com/ggml-org/llama.cpp) directly.
+This personal repository integrates updates from [JamePeng/llama-cpp-python](https://github.com/JamePeng/llama-cpp-python), keeps its own versioning and local patches, and builds the wheel matrix in CI. Issues and PRs about **packaging, wheels, documentation and Guanaco-specific behavior** are welcome here. Include the Guanaco version, wheel channel and a minimal reproducer when reporting a problem; only report it to [JamePeng's repo](https://github.com/JamePeng/llama-cpp-python) or [llama.cpp](https://github.com/ggml-org/llama.cpp) after reproducing it with the corresponding upstream project.
 
 ## License & credits
 
