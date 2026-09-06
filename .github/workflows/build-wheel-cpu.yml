@@ -62,7 +62,7 @@ jobs:
           --channel "$BUILD_CHANNEL" --platform "$WHEEL_PLATFORM"
           --version "$EXPECTED_VERSION"
       - name: Build, repair and smoke-test wheels
-        uses: pypa/cibuildwheel@v3.3.1
+        uses: pypa/cibuildwheel@v4.2.0
         with:
           package-dir: work/source
           output-dir: wheelhouse
