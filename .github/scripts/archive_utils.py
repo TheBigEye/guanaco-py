@@ -90,13 +90,15 @@ def extract_zip(archive: Path, destination: Path) -> None:
             raise ValueError("Empty ZIP or excessive member count")
         if sum(member.file_size for member in members) > MAX_UNPACKED_BYTES:
             raise ValueError("Source ZIP exceeds extraction limits")
-        roots = {portable_path(member.filename).parts[0] for member in members}
+        # ZipInfo.filename normalizes Windows backslashes and truncates NULs.
+        # Validate the original archive spelling before either transformation.
+        roots = {portable_path(member.orig_filename).parts[0] for member in members}
         if len(roots) != 1:
             raise ValueError("Expected a single GitHub archive root")
         seen = ArchivePaths()
         entries = []
         for member in members:
-            path = portable_path(member.filename)
+            path = portable_path(member.orig_filename)
             kind = stat.S_IFMT(member.external_attr >> 16)
             if kind not in (0, stat.S_IFREG, stat.S_IFDIR):
                 raise ValueError(f"Unsupported link/device in ZIP: {member.filename}")
