@@ -154,7 +154,7 @@ jobs:
           python-version: ${{ matrix.python }}
           architecture: x64
       - name: Install the pinned CUDA toolkit
-        uses: Jimver/cuda-toolkit@v0.2.35
+        uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: ${{ needs.config.outputs.version }}
           method: network
