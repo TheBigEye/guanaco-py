@@ -39,6 +39,10 @@ if TYPE_CHECKING:
 # Python wrappers over llama.h structs
 
 
+class LlamaDecodeAbort(RuntimeError):
+    """Raised when llama.cpp aborts an in-flight decoder graph."""
+
+
 class LlamaModel:
     """Intermediate Python wrapper for a llama.cpp llama_model.
     NOTE: For stability it's recommended you use the Llama class instead."""
@@ -633,6 +637,13 @@ class LlamaContext:
 
         self._loras_applied: bool = False
         self._cvec_applied: bool = False
+        self._threadpool_refs = None
+        # llama.cpp borrows callbacks and their user data. Keep callbacks from
+        # the initial params alive just as set_abort_callback() does.
+        self._abort_callback_ref = (
+            self.params.abort_callback if bool(self.params.abort_callback) else None
+        )
+        self._abort_callback_data_ref = self.params.abort_callback_data
         # The native context borrows attached sampler pointers. Keep the Python
         # wrappers alive until they are detached or the context is closed.
         self._sampler_refs: Dict[int, "LlamaSampler"] = {}
@@ -655,6 +666,9 @@ class LlamaContext:
         # native context and its callbacks have been released.
         self.model = None
         self._sampler_refs = {}
+        self._threadpool_refs = None
+        self._abort_callback_ref = None
+        self._abort_callback_data_ref = None
 
     def __del__(self):
         """Release native resources when the wrapper is garbage-collected."""
@@ -898,9 +912,9 @@ class LlamaContext:
                fallback strategy, such as reducing the batch size and retrying.
 
         Raises:
-            RuntimeError: If a fatal, non-recoverable error occurs during decoding
-                or native decoding is aborted. Native abort/fatal paths may
-                leave already processed micro-batches in context memory.
+            LlamaDecodeAbort: If the native abort callback interrupts decoding.
+                Already processed micro-batches may remain in context memory.
+            RuntimeError: If a fatal, non-recoverable error occurs during decoding.
         """
         self._assert_ctx()
         try:
@@ -921,9 +935,14 @@ class LlamaContext:
         elif return_code == 1:
             return 1
 
+        # An abort is an expected control-flow signal, not a fatal backend
+        # failure. Keep it distinct so the high-level wrapper can discard any
+        # partially committed ubatches and finish the request normally.
+        elif return_code == 2:
+            raise LlamaDecodeAbort("llama_decode aborted by user callback")
+
         # Any other code indicates a fatal failure.
         error_map = {
-             2: "Decoding aborted by user callback",
             -1: "Invalid input batch (e.g. n_tokens == 0 or exceeding capacity)",
             -2: "Could not allocate space for the compute graph (VRAM exhausted)",
             -3: "Graph computation failed internally",
@@ -941,6 +960,56 @@ class LlamaContext:
             n_threads_batch: the number of threads used for prompt and batch processing (multiple tokens)
         """
         llama_cpp.llama_set_n_threads(self.ctx, n_threads, n_threads_batch)
+
+    def attach_threadpool(self, threadpool, threadpool_batch=None) -> None:
+        """Attach externally owned ggml threadpools to this context.
+
+        When ``threadpool_batch`` is omitted, llama.cpp uses ``threadpool`` for
+        both generation and batch processing. The wrapper retains the supplied
+        Python objects but does not take ownership of the native pools.
+        """
+        self._assert_ctx()
+        if not threadpool:
+            raise ValueError("threadpool must be a non-null ggml threadpool handle")
+        self.synchronize()
+        llama_cpp.llama_attach_threadpool(self.ctx, threadpool, threadpool_batch)
+        self._threadpool_refs = (
+            threadpool,
+            threadpool if threadpool_batch is None else threadpool_batch,
+        )
+
+    def detach_threadpool(self) -> None:
+        """Synchronize and detach externally owned ggml threadpools."""
+        self._assert_ctx()
+        self.synchronize()
+        llama_cpp.llama_detach_threadpool(self.ctx)
+        self._threadpool_refs = None
+
+    def set_abort_callback(
+        self,
+        abort_callback: Optional[Callable[[ctypes.c_void_p], bool]],
+        abort_callback_data: Optional[ctypes.c_void_p] = None,
+    ) -> None:
+        """Set or clear the callback checked during backend execution.
+
+        Returning ``True`` requests that llama.cpp abort the current decode.
+        The native context borrows the callback and data pointer, so both are
+        retained until replacement, clearing, or context shutdown.
+        """
+        self._assert_ctx()
+        if abort_callback is None:
+            callback_ref = llama_cpp.ggml_abort_callback()
+            data_ref = None
+        elif isinstance(abort_callback, llama_cpp.ggml_abort_callback):
+            callback_ref = abort_callback
+            data_ref = abort_callback_data
+        else:
+            callback_ref = llama_cpp.ggml_abort_callback(abort_callback)
+            data_ref = abort_callback_data
+
+        llama_cpp.llama_set_abort_callback(self.ctx, callback_ref, data_ref)
+        self._abort_callback_ref = None if abort_callback is None else callback_ref
+        self._abort_callback_data_ref = data_ref
 
     def n_threads(self) -> int:
         """Get the number of threads used for generation of a single token."""

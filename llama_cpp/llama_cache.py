@@ -95,6 +95,7 @@ class LlamaDiskCache(BaseLlamaCache):
         return min_key
 
     def __getitem__(self, key: Sequence[int]) -> "llama_core.LlamaState":
+        print("LlamaDiskCache.__getitem__: called", file=sys.stderr)
         if len(self.cache) == 0:
             if self.verbose:
                 print("LlamaDiskCache.__getitem__: cache is empty", file=sys.stderr)
@@ -120,6 +121,7 @@ class LlamaDiskCache(BaseLlamaCache):
     def __setitem__(self, key: Sequence[int], value: "llama_core.LlamaState"):
         if self.verbose:
             print("LlamaDiskCache.__setitem__: stored", file=sys.stderr)
+        print("LlamaDiskCache.__setitem__: called", file=sys.stderr)
         # diskcache natively handles capacity check and eviction upon assignment
         self.cache[tuple(key)] = value
 
