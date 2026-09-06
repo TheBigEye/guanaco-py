@@ -1,5 +1,5 @@
 # Optional source build: OpenBLAS is not a published wheel channel.
-FROM python:3.12-slim-bookworm AS builder
+FROM python:3.14-slim-bookworm AS builder
 ARG GUANACO_VERSION
 ARG GUANACO_REPOSITORY=TheBigEye/guanaco-py
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,7 +15,7 @@ ENV CMAKE_BUILD_PARALLEL_LEVEL=2
 RUN CMAKE_ARGS="-DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" \
     python -m build --wheel --outdir /wheels /src
 
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends libopenblas0-pthread libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /wheels /tmp/wheels
