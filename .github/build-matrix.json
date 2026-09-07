@@ -1,0 +1,14 @@
+{
+  "upstream": "JamePeng/llama-cpp-python",
+  "package": "guanaco-py",
+  "python_versions": ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"],
+  "cuda": {
+    "cu121": {"toolkit": "12.1.1", "architectures": "75;80;86;89;90", "legacy_msvc": true},
+    "cu122": {"toolkit": "12.2.2", "architectures": "75;80;86;89;90", "legacy_msvc": true},
+    "cu123": {"toolkit": "12.3.2", "architectures": "75;80;86;89;90", "legacy_msvc": true},
+    "cu124": {"toolkit": "12.4.1", "architectures": "75;80;86;89;90", "legacy_msvc": false},
+    "cu126": {"toolkit": "12.6.3", "architectures": "75;80;86;89;90", "legacy_msvc": false},
+    "cu128": {"toolkit": "12.8.1", "architectures": "75;80;86;89;90;100;120", "legacy_msvc": false},
+    "cu131": {"toolkit": "13.1.0", "architectures": "75;80;86;89;90;100;120", "legacy_msvc": false}
+  }
+}

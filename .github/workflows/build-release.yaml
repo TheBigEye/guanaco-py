@@ -1,0 +1,250 @@
+name: Check Upstream and Release
+
+on:
+  schedule:
+    # 07:00 Argentina (UTC-3). GitHub schedules use UTC and may start late.
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream X.Y.Z (empty = newest stable release)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# Serialize scheduled/manual runs: no competing uploads or duplicate matrices.
+concurrency:
+  group: guanaco-upstream-release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Discover new upstream version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # GitHub draft-release visibility requires push access. The checker itself
+    # is a read-only API client and never executes upstream code.
+    permissions:
+      contents: write
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+      version: ${{ steps.check.outputs.version }}
+      cpu: ${{ steps.check.outputs.cpu }}
+      avx2: ${{ steps.check.outputs.avx2 }}
+      cuda: ${{ steps.check.outputs.cuda }}
+      promote_latest: ${{ steps.check.outputs.promote_latest }}
+      publish_matrix: ${{ steps.check.outputs.publish_matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Group upstream releases by X.Y.Z and check all channels
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version || '' }}
+        run: python .github/scripts/check_upstream.py --version "$REQUESTED_VERSION" --output work/plan.json
+      - name: Fail early on conflicting release tags or draft recipes (read-only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/publish_release.py --plan work/plan.json --preflight
+      - uses: actions/upload-artifact@v7
+        with:
+          name: upstream-plan
+          path: work/plan.json
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: error
+
+  source:
+    name: Prepare immutable upstream source
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -r requirements-ci.txt
+      - uses: actions/download-artifact@v8
+        with:
+          name: upstream-plan
+          path: work
+      - name: Download ZIPs, resolve gitlinks and adapt distribution metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/prepare_source.py --plan work/plan.json --output work/prepared
+      - uses: actions/upload-artifact@v7
+        with:
+          name: guanaco-source
+          path: work/prepared/
+          compression-level: 0
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: error
+
+  cpu:
+    name: CPU portable
+    needs: [plan, source]
+    if: needs.plan.outputs.cpu == 'true'
+    uses: ./.github/workflows/build-wheel-cpu.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+
+  avx2:
+    name: CPU AVX2
+    needs: [plan, source]
+    if: needs.plan.outputs.avx2 == 'true'
+    uses: ./.github/workflows/build-wheel-avx2.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+
+  cuda:
+    name: CUDA · ${{ matrix.channel }}
+    needs: [plan, source]
+    if: needs.plan.outputs.cuda != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: ${{ fromJSON(needs.plan.outputs.cuda) }}
+    uses: ./.github/workflows/build-wheel-cuda.yaml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      cuda: ${{ matrix.channel }}
+
+  validate:
+    name: Validate the whole matrix and release destinations
+    needs: [plan, source, cpu, avx2, cuda]
+    if: >-
+      always() && !cancelled() &&
+      needs.plan.outputs.build == 'true' &&
+      needs.source.result == 'success' &&
+      (needs.cpu.result == 'success' || needs.cpu.result == 'skipped') &&
+      (needs.avx2.result == 'success' || needs.avx2.result == 'skipped') &&
+      (needs.cuda.result == 'success' || needs.cuda.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Read-only preflight, but draft visibility requires push permission.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v8
+        with:
+          name: upstream-plan
+          path: work
+      - uses: actions/download-artifact@v8
+        with:
+          name: guanaco-source
+          path: work/prepared
+      - name: Download receipts, not the entire multi-GB wheel matrix
+        uses: actions/download-artifact@v8
+        with:
+          pattern: receipt-guanaco-py-*
+          path: work/receipts
+          merge-multiple: true
+      - name: Require every requested Python/platform receipt
+        run: >-
+          python .github/scripts/validate_receipts.py
+          --plan work/plan.json --prepared work/prepared
+          --receipts work/receipts --output work/validated-build.json
+      - name: Check every release/tag conflict before any publisher can start
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/publish_release.py --plan work/plan.json --preflight
+      - uses: actions/upload-artifact@v7
+        with:
+          name: validated-build
+          path: work/validated-build.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  publish:
+    name: Publish · ${{ matrix.channel }}
+    needs: [plan, validate]
+    # An explicit status check allows upstream CPU/CUDA jobs to be skipped
+    # when a partially published family only needs some channels.
+    if: >-
+      !cancelled() && needs.plan.outputs.build == 'true' &&
+      needs.validate.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.publish_matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v8
+        with:
+          name: upstream-plan
+          path: work
+      - uses: actions/download-artifact@v8
+        with:
+          name: guanaco-source
+          path: work/prepared
+      - uses: actions/download-artifact@v8
+        with:
+          name: validated-build
+          path: work
+      - name: Download this channel only; keep artifact directories separate
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ matrix.artifact_pattern }}
+          path: work/artifacts
+          merge-multiple: false
+      - name: Recheck binaries against the global gate and publish from a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_CHANNEL: ${{ matrix.channel }}
+        run: >-
+          python .github/scripts/publish_release.py
+          --plan work/plan.json --prepared work/prepared --artifacts work/artifacts
+          --output work/publish --channel "$BUILD_CHANNEL"
+          --gate work/validated-build.json --publish
+
+  pages-index:
+    name: Publish wheel index
+    needs: [plan, publish]
+    if: >-
+      !cancelled() && needs.plan.outputs.build == 'true' && needs.publish.result == 'success'
+    uses: ./.github/workflows/deploy-pages.yaml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+  docker:
+    name: Publish CPU server image
+    needs: [plan, publish]
+    if: >-
+      !cancelled() && needs.plan.outputs.build == 'true' && needs.publish.result == 'success'
+    uses: ./.github/workflows/build-docker.yaml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      promote_latest: ${{ needs.plan.outputs.promote_latest == 'true' }}
+    permissions:
+      contents: read
+      packages: write

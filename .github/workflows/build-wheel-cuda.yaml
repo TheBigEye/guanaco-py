@@ -1,0 +1,211 @@
+name: Build CUDA Wheels
+
+on:
+  workflow_call:
+    inputs:
+      cuda:
+        description: CUDA channel present in the prepared source manifest
+        required: true
+        type: string
+      version:
+        description: Upstream X.Y.Z prepared by the release workflow
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+
+jobs:
+  config:
+    name: Read the frozen CUDA matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.config.outputs.version }}
+      python: ${{ steps.config.outputs.python }}
+      cmake_linux: ${{ steps.config.outputs.cmake_linux }}
+      cmake_windows: ${{ steps.config.outputs.cmake_windows }}
+      cuda_flags: ${{ steps.config.outputs.cuda_flags }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v8
+        with:
+          name: guanaco-source
+          path: work/prepared
+      - name: Resolve toolkit, architectures and Python versions from the manifest
+        id: config
+        env:
+          CUDA_CHANNEL: ${{ inputs.cuda }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: >-
+          python .github/scripts/configure_build.py cuda
+          --manifest work/prepared/build-manifest.json
+          --channel "$CUDA_CHANNEL" --version "$EXPECTED_VERSION"
+
+  linux:
+    name: Linux · Py ${{ matrix.python }}
+    needs: config
+    runs-on: ubuntu-22.04
+    timeout-minutes: 330
+    container:
+      image: nvidia/cuda:${{ needs.config.outputs.version }}-devel-ubuntu22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(needs.config.outputs.python) }}
+    env:
+      PYTHON_VERSION: ${{ matrix.python }}
+      CUDA_CHANNEL: ${{ inputs.cuda }}
+      EXPECTED_VERSION: ${{ inputs.version }}
+      ARTIFACT: guanaco-py-cuda-linux-x64-${{ inputs.cuda }}-py${{ matrix.python }}
+    steps:
+      - name: Install build tools
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev
+          rm -rf /var/lib/apt/lists/*
+      - name: Checkout build recipes
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up the requested Python interpreter
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          "$HOME/.local/bin/uv" python install "$PYTHON_VERSION"
+          "$HOME/.local/bin/uv" venv --python "$PYTHON_VERSION" .venv
+          "$HOME/.local/bin/uv" pip install --python .venv/bin/python build
+      - uses: actions/download-artifact@v8
+        with:
+          name: guanaco-source
+          path: work/prepared
+      - name: Verify and unpack source
+        run: .venv/bin/python .github/scripts/unpack_source.py work/prepared work/source --version "$EXPECTED_VERSION"
+      - name: Show toolchain
+        run: |
+          .venv/bin/python --version
+          nvcc --version
+      - name: Build CUDA wheel
+        env:
+          CMAKE_ARGS: ${{ needs.config.outputs.cmake_linux }}
+        run: .venv/bin/python -m build --wheel --outdir wheelhouse work/source
+      - name: Validate integrity, Python ABI and unchanged bindings
+        run: >-
+          .venv/bin/python .github/scripts/verify_wheels.py
+          --manifest work/prepared/build-manifest.json --directory wheelhouse
+          --channel "$CUDA_CHANNEL" --platform linux --single --python "$PYTHON_VERSION"
+          --receipt "work/receipts/$ARTIFACT.json"
+      - name: Upload wheel binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+          overwrite: true
+      - name: Upload validation receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: receipt-${{ env.ARTIFACT }}
+          path: work/receipts/*.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  windows:
+    name: Windows · Py ${{ matrix.python }}
+    needs: config
+    runs-on: windows-2022
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(needs.config.outputs.python) }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHON_VERSION: ${{ matrix.python }}
+      CUDA_CHANNEL: ${{ inputs.cuda }}
+      EXPECTED_VERSION: ${{ inputs.version }}
+      ARTIFACT: guanaco-py-cuda-windows-x64-${{ inputs.cuda }}-py${{ matrix.python }}
+    steps:
+      - name: Add MSBuild
+        uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: x64
+      - name: Checkout build recipes
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+      - name: Install the pinned CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ needs.config.outputs.version }}
+          method: network
+          use-github-cache: false
+      - name: Set up MSVC
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          echo PATH=%PATH%>>%GITHUB_ENV%
+          echo INCLUDE=%INCLUDE%>>%GITHUB_ENV%
+          echo LIB=%LIB%>>%GITHUB_ENV%
+          echo LIBPATH=%LIBPATH%>>%GITHUB_ENV%
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pip build ninja
+      - uses: actions/download-artifact@v8
+        with:
+          name: guanaco-source
+          path: work/prepared
+      - name: Verify and unpack source
+        run: python .github/scripts/unpack_source.py work/prepared work/source --version "$env:EXPECTED_VERSION"
+      - name: Show toolchain
+        run: |
+          python --version
+          nvcc --version
+      - name: Build CUDA wheel
+        env:
+          CMAKE_GENERATOR: Ninja
+          CMAKE_ARGS: ${{ needs.config.outputs.cmake_windows }}
+          # CUDA 12.1–12.3 need the legacy MSVC compatibility flags.
+          CUDAFLAGS: ${{ needs.config.outputs.cuda_flags }}
+        run: python -m build --wheel --outdir wheelhouse work/source
+      - name: Validate integrity, Python ABI and unchanged bindings
+        run: >-
+          python .github/scripts/verify_wheels.py
+          --manifest work/prepared/build-manifest.json --directory wheelhouse
+          --channel "$env:CUDA_CHANNEL" --platform windows --single --python "$env:PYTHON_VERSION"
+          --receipt "work/receipts/$env:ARTIFACT.json"
+      - name: Upload wheel binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+          overwrite: true
+      - name: Upload validation receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: receipt-${{ env.ARTIFACT }}
+          path: work/receipts/*.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

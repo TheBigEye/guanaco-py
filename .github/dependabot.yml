@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directories:
+      - /docker/simple
+      - /docker/cuda_simple
+      - /docker/openblas_simple
+      - /docker/open_llama
+    schedule:
+      interval: weekly

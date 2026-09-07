@@ -1,0 +1,22 @@
+# This repository contains automation, not a checked-in Python distribution.
+work/
+prepared/
+wheelhouse/
+site/
+releases.json
+plan.json
+.venv/
+.cache/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.whl
+*.egg-info/
+.env
+.env.*
+
+# Automation lint/coverage outputs
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/

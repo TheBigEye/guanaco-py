@@ -1,0 +1,21 @@
+.git
+work
+prepared
+wheelhouse
+site
+.venv
+.cache
+.pytest_cache
+__pycache__
+**/__pycache__
+*.whl
+*.gguf
+*.bin
+.env
+.env.*
+
+# Local lint and coverage output
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov

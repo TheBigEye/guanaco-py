@@ -1,0 +1,21 @@
+name: Build AVX2 Wheels
+
+# Same build/verification pipeline as portable CPU, but with a fixed
+# AVX2/FMA/F16C/SSE4.2/BMI2 target. No -march=native and no duplicated recipe.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Upstream X.Y.Z prepared by the release workflow
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  avx2:
+    uses: ./.github/workflows/build-wheel-cpu.yml
+    with:
+      version: ${{ inputs.version }}
+      channel: avx2
