@@ -10,6 +10,8 @@ name: Deploy Pages
 #   - workflow_call, so build-release.yaml can reuse this same
 #     job right after it finishes publishing new wheels.
 
+# :)
+
 on:
   workflow_dispatch:
   release:
