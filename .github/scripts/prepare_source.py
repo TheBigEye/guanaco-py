@@ -9,6 +9,7 @@ import gzip
 import json
 import os
 import re
+import subprocess
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -118,6 +119,71 @@ def runtime_hashes(source: Path) -> dict[str, str]:
     }
 
 
+PATCHES_DIR = Path(__file__).resolve().parent.parent / "patches"
+
+
+def patch_targets(patch_path: Path) -> list[str]:
+    """Read the 'b/<path>' target(s) declared by a unified diff, for provenance only."""
+    targets = []
+    for line in patch_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("+++ "):
+            target = line[4:].split("\t", 1)[0].strip()
+            target = target.removeprefix("b/")
+            if target in targets:
+                raise ValueError(f"{patch_path.name} touches {target} more than once")
+            targets.append(target)
+    if not targets:
+        raise ValueError(f"{patch_path.name} declares no target file")
+    return targets
+
+
+def apply_patches(source: Path, patches_dir: Path) -> list[dict]:
+    """Apply reviewed local patches to specific runtime files, in strict order.
+
+    Each patch is a small, human-reviewed unified diff kept in .github/patches/,
+    applied with `git apply`, which requires an exact context match. If upstream
+    changes the surrounding code, the patch stops applying cleanly and this
+    raises instead of silently dropping the fix, guessing a new offset, or
+    fuzzy-matching it onto code a human has not reviewed. See docs/automation.md.
+    """
+    applied = []
+    if not patches_dir.is_dir():
+        return applied
+    for patch_path in sorted(patches_dir.glob("*.patch")):
+        targets = patch_targets(patch_path)
+        missing = [name for name in targets if not (source / name).is_file()]
+        if missing:
+            raise ValueError(f"{patch_path.name} targets a file upstream no longer has: {missing}")
+        pre_sha256 = {name: sha256(source / name) for name in targets}
+        check = subprocess.run(
+            ["git", "apply", "--check", "--whitespace=nowarn", str(patch_path.resolve())],
+            cwd=source,
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode != 0:
+            raise ValueError(
+                f"{patch_path.name} no longer applies cleanly to this upstream version; "
+                f"review and refresh it before releasing this version.\n{check.stderr.strip()}"
+            )
+        subprocess.run(
+            ["git", "apply", "--whitespace=nowarn", str(patch_path.resolve())],
+            cwd=source,
+            check=True,
+        )
+        applied.append(
+            {
+                "patch": patch_path.name,
+                "patch_sha256": sha256(patch_path),
+                "files": targets,
+                "pre_sha256": pre_sha256,
+                "post_sha256": {name: sha256(source / name) for name in targets},
+            }
+        )
+        print(f"Applied local patch {patch_path.name} to {', '.join(targets)}")
+    return applied
+
+
 def adapt_metadata(source: Path, plan: dict, native_commit: str) -> str:
     """Preserve version/authors/license/dependencies; rename distribution self-references."""
     version_key(plan["version"])
@@ -212,11 +278,13 @@ def prepare(api: GitHub, plan: dict, output: Path) -> dict:
             native = next((s for s in snapshots if s["path"] == "vendor/llama.cpp"), None)
             if native is None:
                 raise ValueError("Upstream no longer contains the expected llama.cpp submodule")
-            original_runtime = runtime_hashes(source)
-            if not original_runtime or not (source / "LICENSE.md").is_file():
+            upstream_runtime = runtime_hashes(source)
+            if not upstream_runtime or not (source / "LICENSE.md").is_file():
                 raise ValueError("Missing upstream runtime or license")
+            applied_patches = apply_patches(source, PATCHES_DIR)
+            patched_runtime = runtime_hashes(source)
             patch = adapt_metadata(source, plan, native["commit"])
-            if runtime_hashes(source) != original_runtime:
+            if runtime_hashes(source) != patched_runtime:
                 raise ValueError("Binding code changed while preparing distribution metadata")
             (prepared / "packaging.patch").write_text(patch, encoding="utf-8")
             archive = prepared / "source.tar.gz"
@@ -225,15 +293,24 @@ def prepare(api: GitHub, plan: dict, output: Path) -> dict:
             **plan,
             "package": PACKAGE,
             "snapshots": snapshots,
-            "runtime_sha256": original_runtime,
+            # What the wheel actually ships (post-patch); this is what
+            # verify_wheels.py's check_runtime() validates against.
+            "runtime_sha256": patched_runtime,
+            # The unmodified upstream hashes, kept only so a patched file is
+            # easy to diff/audit against the pristine release it came from.
+            "upstream_runtime_sha256": upstream_runtime,
+            "applied_patches": applied_patches,
             "source_archive_sha256": sha256(archive),
             "packaging_patch_sha256": sha256(prepared / "packaging.patch"),
             "native_commit": native["commit"],
         }
         write_json(prepared / "build-manifest.json", manifest)
-    print(
-        f"Prepared guanaco-py {plan['version']}; bindings unchanged; llama.cpp @ {native['commit']}"
+    note = (
+        f"{len(applied_patches)} local patch(es) applied"
+        if applied_patches
+        else "bindings unchanged"
     )
+    print(f"Prepared guanaco-py {plan['version']}; {note}; llama.cpp @ {native['commit']}")
     return manifest
 
 

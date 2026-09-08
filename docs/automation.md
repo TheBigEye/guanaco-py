@@ -13,6 +13,7 @@ Guanaco is a build/distribution repository. The binding source of truth is a **p
                     |
             prepare_source.py
        immutable ZIPs + exact gitlinks
+       + .github/patches/ (strict, no fuzz)
        + distribution/build metadata
                     |
        one checksummed source.tar.gz
@@ -115,13 +116,24 @@ Only the downloaded `pyproject.toml` is adapted:
 
 The source's `__version__` must match the selected `X.Y.Z`. Authors, runtime dependencies, license text and the version provider are retained. TOML is reparsed and checked after serialization.
 
-Every runtime source file is hashed before and after preparation. Wheel validation checks those same bytes again. There is no cache/inference patch queue and no global search-and-replace through Python code.
+Every runtime source file is hashed right after download, and again after any local patches are applied (see below); wheel validation checks the wheel's actual bytes against that second, post-patch hash. There is no global search-and-replace through Python code, no fuzzy patching, and no cache/inference patch queue beyond the reviewed, file-scoped patches described next.
 
-### Boundary of the no-patches policy
+### Local patches: a narrow, explicit, provenance-tracked exception
+
+`.github/patches/*.patch` holds small, hand-written, hand-reviewed unified diffs, applied in filename order by `prepare_source.py` immediately after the upstream download and before metadata adaptation. Each one:
+
+- Must apply with `git apply` **exactly** — full context match, no fuzz. If upstream changes the surrounding code enough that a patch no longer applies, the build fails right there with the patch's name and `git apply`'s own error, instead of silently dropping the fix, silently skipping the file, or fuzzy-applying it onto code nobody has reviewed. Refresh or retire the patch, then re-run.
+- Must declare its own target file(s) as normal `+++ b/<path>` diff headers; a patch aimed at a file upstream no longer ships also fails closed rather than being silently skipped.
+- Is hashed before and after, and its filename, its own SHA-256, its target file(s), and their before/after hashes are all recorded in `build-manifest.json` under `applied_patches`. `runtime_sha256` (what `verify_wheels.py` checks the built wheel against) reflects the tree **after** patches are applied; the untouched download is kept separately as `upstream_runtime_sha256` purely so a patched file stays easy to diff against the pristine release it came from.
+- Is exactly as invisible to the metadata-adaptation invariant as any other runtime file: `adapt_metadata()` still may not change a single byte under `llama_cpp/`, patched or not, and preparation still fails if it does.
+
+This is a deliberate, narrow carve-out for hand-reviewed behavioral fixes upstream hasn't (yet) merged, not a general patch queue: keep `.github/patches/` small, keep each patch scoped to one concern, and prefer upstreaming the fix instead when practical, since every patch is one more thing that can drift and demand attention on the next import.
+
+### Boundary of the no-unreviewed-changes policy
 
 Changing a distribution name is not a universal compatibility alias. Upstream code or downstream applications that call `importlib.metadata.version("llama-cpp-python")` will not discover `guanaco-py` under that name.
 
-For example, upstream `0.3.49` uses that lookup in a version guard for optional Windows OpenMP preloading. This code is intentionally not patched. Import checks are necessary but do not cover every embedded/ComfyUI/OpenMP integration scenario. If a name assumption causes an integration failure, investigate it explicitly or fix it upstream; do not assume that byte-identical Python files guarantee identical runtime behavior under different packaging/build options.
+For example, upstream `0.3.49` uses that lookup in a version guard for optional Windows OpenMP preloading. This code is intentionally not patched by the metadata step, and no blanket patch papers over every such name assumption. Import checks are necessary but do not cover every embedded/ComfyUI/OpenMP integration scenario. If a name assumption causes an integration failure, investigate it explicitly, add a scoped patch under `.github/patches/` if it's worth carrying, or fix it upstream; do not assume that byte-identical Python files guarantee identical runtime behavior under different packaging/build options.
 
 ## Artifacts and provenance
 
@@ -132,6 +144,8 @@ source.tar.gz
 build-manifest.json
 packaging.patch
 ```
+
+If `.github/patches/` contains any patches, the manifest additionally records their provenance under `applied_patches` (patch name, patch hash, target file(s), before/after hashes of each), and `runtime_sha256` reflects the patched tree while `upstream_runtime_sha256` keeps the untouched download's hashes for comparison.
 
 The manifest records the upstream release ID, tag, commit, original release-note text, source ZIP URLs/hashes, recursive submodule commits/hashes, native commit, automation revision/run, Python matrix and runtime file hashes.
 
@@ -250,7 +264,7 @@ Unit tests are offline and do not download models. They exercise release selecti
 | `release_common.py` | Version/channel policy, provenance validation, safe outputs and GitHub API reads/writes |
 | `check_upstream.py` | Select a version, freeze the family snapshot, plan missing channels |
 | `download_utils.py` / `archive_utils.py` | Bounded HTTPS downloads and transactional, portable extraction |
-| `prepare_source.py` / `unpack_source.py` | Prepare metadata-only source changes; verify and unpack the shared archive |
+| `prepare_source.py` / `unpack_source.py` | Prepare metadata-only source changes plus any reviewed `.github/patches/`; verify and unpack the shared archive |
 | `configure_build.py` | Testable CPU/CUDA settings and Docker image tags; no inline configuration Python in YAML |
 | `verify_wheels.py` | Validate wheel contents and produce a small receipt |
 | `validate_receipts.py` | Require the full requested build matrix and emit its publication gate |
