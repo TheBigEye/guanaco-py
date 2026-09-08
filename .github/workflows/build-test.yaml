@@ -1,0 +1,219 @@
+name: Test Wheel Build (no release)
+run-name: Test wheels · ${{ inputs.version || 'latest stable' }} · ${{ inputs.systems }} · Python ${{ inputs.python_versions }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream X.Y.Z (empty = newest stable release)"
+        type: string
+        required: false
+        default: ""
+      cpu:
+        description: "Build portable CPU wheels"
+        type: boolean
+        default: true
+      avx2:
+        description: "Build AVX2 wheels"
+        type: boolean
+        default: false
+      cuda:
+        description: "Build CUDA wheels (choose toolkits below)"
+        type: boolean
+        default: false
+      cuda_channels:
+        description: "CUDA channels: cu124,cu128,... or all (ignored if CUDA is off)"
+        type: string
+        default: "cu124"
+      python_versions:
+        description: "Python versions: 3.9,3.13,3.14,... or all"
+        type: string
+        default: "3.13"
+      systems:
+        description: "Target systems (x86-64)"
+        type: choice
+        options: [both, linux, windows]
+        default: both
+
+# Read upstream; write only temporary Actions artifacts, never repository assets.
+permissions:
+  contents: read
+
+concurrency:
+  group: guanaco-test-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Validate test selection and pin upstream source
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      cpu: ${{ steps.plan.outputs.cpu }}
+      avx2: ${{ steps.plan.outputs.avx2 }}
+      cuda: ${{ steps.plan.outputs.cuda }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Plan a fresh test, even if this version is already published
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          BUILD_CPU: ${{ inputs.cpu }}
+          BUILD_AVX2: ${{ inputs.avx2 }}
+          BUILD_CUDA: ${{ inputs.cuda }}
+          CUDA_CHANNELS: ${{ inputs.cuda_channels }}
+          PYTHON_VERSIONS: ${{ inputs.python_versions }}
+          SYSTEMS: ${{ inputs.systems }}
+        run: >-
+          python .github/scripts/plan_test_build.py
+          --version "$REQUESTED_VERSION" --cpu "$BUILD_CPU"
+          --avx2 "$BUILD_AVX2" --cuda "$BUILD_CUDA" --cuda-channels "$CUDA_CHANNELS"
+          --python-versions "$PYTHON_VERSIONS" --systems "$SYSTEMS"
+          --output work/test-plan.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: test-build-plan
+          path: work/test-plan.json
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: error
+
+  source:
+    name: Prepare the source with the current patches
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -r requirements-ci.txt
+      - uses: actions/download-artifact@v8
+        id: plan
+        with:
+          name: test-build-plan
+          path: work
+      - name: Use the same source preparation as the release workflow
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          python .github/scripts/prepare_source.py --plan work/test-plan.json --output work/prepared 2>&1 | tee work/preparation.log
+      - name: Collect patches, source details and preparation logs
+        if: ${{ !cancelled() && steps.plan.outcome == 'success' }}
+        run: >-
+          python .github/scripts/inspect_test_build.py source
+          --plan work/test-plan.json --prepared work/prepared
+          --log work/preparation.log --output work/inspection
+      - name: Upload the shared prepared source
+        uses: actions/upload-artifact@v7
+        with:
+          name: guanaco-source
+          path: work/prepared/
+          compression-level: 0
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: error
+      - name: Keep diagnostics even when a patch or source step failed
+        if: ${{ !cancelled() && steps.plan.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-build-inspection
+          path: work/inspection/
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: warn
+
+  cpu:
+    name: Test · CPU portable
+    needs: [plan, source]
+    if: needs.plan.outputs.cpu == 'true'
+    uses: ./.github/workflows/build-wheel-cpu.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+
+  avx2:
+    name: Test · AVX2
+    needs: [plan, source]
+    if: needs.plan.outputs.avx2 == 'true'
+    uses: ./.github/workflows/build-wheel-avx2.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+
+  cuda:
+    name: Test · CUDA ${{ matrix.channel }}
+    needs: [plan, source]
+    if: needs.plan.outputs.cuda != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: ${{ fromJSON(needs.plan.outputs.cuda) }}
+    uses: ./.github/workflows/build-wheel-cuda.yaml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      cuda: ${{ matrix.channel }}
+
+  report:
+    name: Check the selected matrix and leave a downloadable report
+    needs: [plan, source, cpu, avx2, cuda]
+    if: ${{ always() && !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v8
+        with:
+          name: test-build-plan
+          path: work
+      - uses: actions/download-artifact@v8
+        id: source
+        if: needs.source.result == 'success'
+        with:
+          name: guanaco-source
+          path: work/prepared
+      - name: Download small receipts, not all CUDA binaries into one runner
+        id: receipts
+        if: needs.source.result == 'success'
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: receipt-test-guanaco-py-*
+          path: work/receipts
+          merge-multiple: true
+      - name: Require every requested build and receipt, without publishing
+        if: ${{ !cancelled() }}
+        env:
+          BUILD_JOBS: ${{ toJSON(needs) }}
+          ARTIFACT_DOWNLOADS: ${{ toJSON(steps) }}
+        run: >-
+          python .github/scripts/inspect_test_build.py result
+          --plan work/test-plan.json --prepared work/prepared
+          --receipts work/receipts --output work/report
+      - name: Upload the report on success or failure
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-build-report
+          path: work/report/
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: error
