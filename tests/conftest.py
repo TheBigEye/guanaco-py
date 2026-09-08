@@ -15,6 +15,23 @@ spec.loader.exec_module(wheel_index)
 
 
 @pytest.fixture(autouse=True)
+def _isolate_github_file_commands(monkeypatch):
+    """Tests must not write fixture reports/outputs into the real Actions runner.
+
+    Tests that exercise these writers explicitly set their own temporary paths.
+    Normal workflow CLI invocations do not load this pytest-only fixture.
+    """
+    for name in (
+        "GITHUB_STEP_SUMMARY",
+        "GITHUB_OUTPUT",
+        "GITHUB_ENV",
+        "GITHUB_PATH",
+        "GITHUB_STATE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_committed_patches_by_default(monkeypatch, tmp_path):
     """Point prepare_source at an empty patches directory unless a test opts in.
 
