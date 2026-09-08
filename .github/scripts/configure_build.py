@@ -113,21 +113,39 @@ def image_tags(repository: str, version: str, promote_latest: bool) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("kind", choices=["cpu", "cuda", "docker", "matrix"])
-    parser.add_argument("--manifest", type=Path)
-    parser.add_argument("--channel")
-    parser.add_argument("--platform", choices=["linux", "windows"])
-    parser.add_argument("--version", default=os.getenv("VERSION", ""))
-    parser.add_argument("--repository", default=os.getenv("GITHUB_REPOSITORY", ""))
-    parser.add_argument(
+    sub = parser.add_subparsers(dest="kind", required=True)
+
+    cpu = sub.add_parser("cpu")
+    cpu.add_argument("--manifest", type=Path, required=True)
+    cpu.add_argument("--channel", required=True)
+    # Not required here (only cpu_options() enforces it): preserves the original
+    # flat parser's behavior, where an early version mismatch could still be
+    # reported even if --platform was omitted.
+    cpu.add_argument("--platform", choices=["linux", "windows"])
+    cpu.add_argument("--version", default=os.getenv("VERSION", ""))
+
+    cuda = sub.add_parser("cuda")
+    cuda.add_argument("--manifest", type=Path, required=True)
+    cuda.add_argument("--channel", required=True)
+    # Accepted for a uniform CLI across kinds; cuda_options() does not use it.
+    cuda.add_argument("--platform", choices=["linux", "windows"])
+    cuda.add_argument("--version", default=os.getenv("VERSION", ""))
+
+    matrix = sub.add_parser("matrix")
+    matrix.add_argument("--manifest", type=Path, required=True)
+    matrix.add_argument("--version", default=os.getenv("VERSION", ""))
+
+    docker = sub.add_parser("docker")
+    docker.add_argument("--version", default=os.getenv("VERSION", ""))
+    docker.add_argument("--repository", default=os.getenv("GITHUB_REPOSITORY", ""))
+    docker.add_argument(
         "--promote-latest", action="store_true", default=os.getenv("PROMOTE_LATEST") == "true"
     )
+
     args = parser.parse_args()
     if args.kind == "docker":
         values = {"tags": image_tags(args.repository, args.version, args.promote_latest)}
     else:
-        if args.manifest is None or (args.kind != "matrix" and not args.channel):
-            parser.error("CPU/CUDA configuration requires --manifest and --channel")
         manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
         if args.version and args.version != manifest["version"]:
             raise ValueError("Prepared manifest version does not match the workflow input")
