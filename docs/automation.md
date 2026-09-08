@@ -234,6 +234,16 @@ If retaining the current repository:
 - Existing environments may need a fresh virtual environment or an explicit version reinstall; `pip -U` alone does not imply a downgrade from `1.x`.
 - Old Git history still contains the former binding source. The clean export/new repository route removes that history; deleting files in an ordinary commit does not erase it.
 
+## Manual compilation rehearsal (no release)
+
+Before running the publisher, use **Test Wheel Build (no release)** to select an upstream version, CPU/AVX2/CUDA backends, Python versions and Linux/Windows targets. It builds even when the version is already published, but does not touch existing releases or run Pages/Docker follow-ups. Default selection: CPU, Python 3.13, both systems.
+
+It reuses the current source preparation and reusable builders. The shared builders now read an optional test platform selection from the prepared manifest; normal release manifests still build both systems. Test plans are marked `test_only`, use `test-` artifact prefixes, and are explicitly refused by release staging/publication.
+
+The test run retains wheels and inspection data as Actions artifacts. Its final report checks the selected job outcomes and validation receipts; partial or failed runs are not labelled successful merely because some wheel files are downloadable. Input patches, reported application results, final affected source files and preparation logs are included for debugging without changing the patch mechanism.
+
+See [Manual test builds](test-builds.md) for the seven inputs, examples and the artifact/download guide. A test does not promote its artifacts: the real release workflow remains a separate action.
+
 ## Local development
 
 ```bash

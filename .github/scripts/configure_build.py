@@ -8,11 +8,50 @@ import os
 import shlex
 from pathlib import Path
 
-from release_common import outputs, repository_name, validate_build_matrix, version_key
+from release_common import (
+    artifact_prefix,
+    build_platforms,
+    is_test_build,
+    outputs,
+    repository_name,
+    validate_build_matrix,
+    version_key,
+)
 from verify_wheels import selector
 
 CPU_OFF = ("CUDA", "METAL", "VULKAN", "BLAS", "NATIVE", "BACKEND_DL", "CPU_ALL_VARIANTS")
 CPU_SIMD = ("AVX", "AVX2", "FMA", "F16C", "SSE42", "BMI2")
+
+
+def build_scope(manifest: dict) -> dict:
+    platforms = build_platforms(manifest)
+    return {
+        "test_only": is_test_build(manifest),
+        "artifact_prefix": artifact_prefix(manifest),
+        "linux": "linux" in platforms,
+        "windows": "windows" in platforms,
+    }
+
+
+def cpu_matrix(manifest: dict) -> dict:
+    validate_build_matrix(manifest)
+    rows = [
+        {
+            "os": "ubuntu-latest",
+            "platform": "linux",
+            "label": "Linux x64 · manylinux_2_34",
+            "cibw_archs": "x86_64",
+        },
+        {
+            "os": "windows-latest",
+            "platform": "windows",
+            "label": "Windows x64 · AMD64",
+            "cibw_archs": "AMD64",
+        },
+    ]
+    return {
+        "matrix": {"include": [row for row in rows if row["platform"] in build_platforms(manifest)]}
+    }
 
 
 def cpu_options(manifest: dict, channel: str, platform: str) -> dict:
@@ -23,10 +62,13 @@ def cpu_options(manifest: dict, channel: str, platform: str) -> dict:
     flags += [f"-DGGML_{name}={'ON' if channel == 'avx2' else 'OFF'}" for name in CPU_SIMD]
     cmake = " ".join(flags)
     compiler = "CC=/usr/bin/gcc CXX=/usr/bin/g++ " if platform == "linux" else ""
+    if platform not in build_platforms(manifest):
+        raise ValueError("Platform was not selected in this build")
     return {
+        **build_scope(manifest),
         "build": selector(manifest["python_versions"], platform),
         "cibw_environment": compiler + f'CMAKE_ARGS="{cmake}"',
-        "artifact": f"guanaco-py-{channel}-{platform}-x64",
+        "artifact": f"{artifact_prefix(manifest)}guanaco-py-{channel}-{platform}-x64",
     }
 
 
@@ -46,6 +88,7 @@ def cuda_options(manifest: dict, channel: str) -> dict:
     ]
     linux = [*flags, "-DCMAKE_EXE_LINKER_FLAGS=-L/usr/local/cuda/lib64/stubs -lcuda"]
     return {
+        **build_scope(manifest),
         "short": channel,
         "version": settings["toolkit"],
         "python": manifest["python_versions"],
@@ -70,7 +113,7 @@ def image_tags(repository: str, version: str, promote_latest: bool) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("kind", choices=["cpu", "cuda", "docker"])
+    parser.add_argument("kind", choices=["cpu", "cuda", "docker", "matrix"])
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--channel")
     parser.add_argument("--platform", choices=["linux", "windows"])
@@ -83,16 +126,17 @@ def main() -> None:
     if args.kind == "docker":
         values = {"tags": image_tags(args.repository, args.version, args.promote_latest)}
     else:
-        if args.manifest is None or not args.channel:
+        if args.manifest is None or (args.kind != "matrix" and not args.channel):
             parser.error("CPU/CUDA configuration requires --manifest and --channel")
         manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
         if args.version and args.version != manifest["version"]:
             raise ValueError("Prepared manifest version does not match the workflow input")
-        values = (
-            cpu_options(manifest, args.channel, args.platform)
-            if args.kind == "cpu"
-            else cuda_options(manifest, args.channel)
-        )
+        if args.kind == "matrix":
+            values = cpu_matrix(manifest)
+        elif args.kind == "cpu":
+            values = cpu_options(manifest, args.channel, args.platform)
+        else:
+            values = cuda_options(manifest, args.channel)
     outputs(os.getenv("GITHUB_OUTPUT"), **values)
     print(json.dumps(values, indent=2))
 

@@ -199,6 +199,14 @@ python -m ruff format --check .github/scripts docker tests
 
 The supported toolchain matrix is in [`.github/build-matrix.json`](.github/build-matrix.json). Offline tests cover the automation on Python 3.9, 3.13 and 3.14 in CI, with lint/format checks and an 85% coverage floor. CPU and AVX2 share one parametrized builder. Wheel jobs validate package contents, and CPU/AVX2 jobs import the installed wheel and call its native API. CUDA jobs validate wheel contents but do not claim GPU inference coverage on GPU-less runners.
 
+## Manual wheel test builds
+
+Use **Actions → Test Wheel Build (no release)** to compile a selected upstream version before a real release. Enable any combination of CPU, AVX2 and CUDA; choose CUDA channels, Python versions and Linux/Windows targets. Defaults produce just **two CPU wheels**: Python 3.13 on both systems.
+
+The workflow reuses the release builders and current patches, including for versions already published. It uploads downloadable wheels, source/patch diagnostics and a final verification report — **no releases, tags, Pages or Docker publication**. Failed test jobs retain any wheels already produced, marked as test artifacts for investigation, not as validated release binaries.
+
+See [Manual test builds](docs/test-builds.md) for inputs, examples, artifact names and limitations. Use a separate environment when installing test wheels, since their filenames/version can match an existing release.
+
 ## License & credits
 
 * [MIT](LICENSE.md)

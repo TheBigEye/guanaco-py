@@ -7,15 +7,15 @@ import json
 import re
 from pathlib import Path
 
-from release_common import expected_assets, write_json
+from release_common import artifact_prefix, build_platforms, expected_assets, write_json
 
 
 def artifact_specs(plan: dict) -> dict[str, dict]:
     result = {}
     for channel in plan["missing_channels"]:
-        for platform in ("linux", "windows"):
+        for platform in build_platforms(plan):
             if channel in ("cpu", "avx2"):
-                name = f"guanaco-py-{channel}-{platform}-x64"
+                name = f"{artifact_prefix(plan)}guanaco-py-{channel}-{platform}-x64"
                 result[name] = {
                     "channel": channel,
                     "platform": platform,
@@ -23,7 +23,7 @@ def artifact_specs(plan: dict) -> dict[str, dict]:
                 }
             else:
                 for python in plan["python_versions"]:
-                    name = f"guanaco-py-cuda-{platform}-x64-{channel}-py{python}"
+                    name = f"{artifact_prefix(plan)}guanaco-py-cuda-{platform}-x64-{channel}-py{python}"
                     result[name] = {
                         "channel": channel,
                         "platform": platform,

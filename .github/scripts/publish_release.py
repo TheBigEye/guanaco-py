@@ -21,6 +21,7 @@ from release_common import (
     build_snapshot,
     complete,
     expected_assets,
+    is_test_build,
     outputs,
     provenance,
     release_tag,
@@ -29,6 +30,11 @@ from release_common import (
 )
 from validate_receipts import artifact_specs, matching_manifest
 from verify_wheels import verify_directory
+
+
+def require_release_plan(plan: dict) -> None:
+    if is_test_build(plan):
+        raise ValueError("Test-build plans cannot be staged or published as releases")
 
 
 def artifact_channel(name: str) -> tuple[str, str]:
@@ -143,6 +149,7 @@ def stage(
     channel: str | None = None,
     gate: dict | None = None,
 ) -> tuple[dict, dict[str, Path]]:
+    require_release_plan(plan)
     manifest = verify_prepared(plan, prepared)
     if channel is not None and channel not in plan["missing_channels"]:
         raise ValueError("Cannot stage a channel absent from the release plan")
@@ -212,6 +219,7 @@ def release_body(plan: dict, channel: str, finished: bool) -> str:
 
 def preflight(api: GitHub, plan: dict, channels: list[str]) -> dict[str, dict | None]:
     """Inspect EVERY requested destination before creating or modifying a release."""
+    require_release_plan(plan)
     existing = {}
     for channel in channels:
         tag = release_tag(plan["version"], channel)
@@ -269,6 +277,7 @@ def check_uploaded(release: dict, files: list[Path]) -> None:
 
 
 def publish(api: GitHub, plan: dict, folders: dict[str, Path], uploader=None) -> None:
+    require_release_plan(plan)
     if not SHA.fullmatch(plan["recipe_commit"]):
         raise ValueError("Publishing requires an immutable automation commit (GITHUB_SHA)")
     repo = plan["repository"]

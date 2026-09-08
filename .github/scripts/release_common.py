@@ -37,6 +37,32 @@ SNAPSHOT_FIELDS = ("upstream", "python_versions", "channels", "cuda")
 MAX_API_BYTES = 32 * 1024**2
 
 
+def is_test_build(plan: dict) -> bool:
+    value = plan.get("test_only", False)
+    if type(value) is not bool:
+        raise ValueError("test_only must be a boolean")
+    return value
+
+
+def build_platforms(plan: dict) -> list[str]:
+    """Release builds keep both systems; test plans may select a nonempty subset."""
+    if not is_test_build(plan):
+        return ["linux", "windows"]
+    values = plan.get("platforms")
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(value not in ("linux", "windows") for value in values)
+        or len(values) != len(set(values))
+    ):
+        raise ValueError("Test platforms must be a unique nonempty Linux/Windows selection")
+    return values.copy()
+
+
+def artifact_prefix(plan: dict) -> str:
+    return "test-" if is_test_build(plan) else ""
+
+
 def version_key(version: str) -> tuple[int, int, int]:
     if not isinstance(version, str) or not VERSION.fullmatch(version):
         raise ValueError(f"Expected a stable X.Y.Z version, got {version!r}")

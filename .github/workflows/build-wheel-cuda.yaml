@@ -29,6 +29,10 @@ jobs:
       cmake_linux: ${{ steps.config.outputs.cmake_linux }}
       cmake_windows: ${{ steps.config.outputs.cmake_windows }}
       cuda_flags: ${{ steps.config.outputs.cuda_flags }}
+      linux: ${{ steps.config.outputs.linux }}
+      windows: ${{ steps.config.outputs.windows }}
+      test_only: ${{ steps.config.outputs.test_only }}
+      artifact_prefix: ${{ steps.config.outputs.artifact_prefix }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -51,6 +55,7 @@ jobs:
           --channel "$CUDA_CHANNEL" --version "$EXPECTED_VERSION"
 
   linux:
+    if: needs.config.outputs.linux == 'true'
     name: Linux · Py ${{ matrix.python }}
     needs: config
     runs-on: ubuntu-22.04
@@ -65,7 +70,7 @@ jobs:
       PYTHON_VERSION: ${{ matrix.python }}
       CUDA_CHANNEL: ${{ inputs.cuda }}
       EXPECTED_VERSION: ${{ inputs.version }}
-      ARTIFACT: guanaco-py-cuda-linux-x64-${{ inputs.cuda }}-py${{ matrix.python }}
+      ARTIFACT: ${{ needs.config.outputs.artifact_prefix }}guanaco-py-cuda-linux-x64-${{ inputs.cuda }}-py${{ matrix.python }}
     steps:
       - name: Install build tools
         env:
@@ -95,21 +100,33 @@ jobs:
           .venv/bin/python --version
           nvcc --version
       - name: Build CUDA wheel
+        id: build
         env:
           CMAKE_ARGS: ${{ needs.config.outputs.cmake_linux }}
         run: .venv/bin/python -m build --wheel --outdir wheelhouse work/source
-      - name: Validate integrity, Python ABI and unchanged bindings
+      - name: Validate integrity, Python ABI and bindings
+        id: verify
         run: >-
           .venv/bin/python .github/scripts/verify_wheels.py
           --manifest work/prepared/build-manifest.json --directory wheelhouse
           --channel "$CUDA_CHANNEL" --platform linux --single --python "$PYTHON_VERSION"
           --receipt "work/receipts/$ARTIFACT.json"
+      - name: Inspect test wheel contents, including failed/partial builds
+        if: ${{ !cancelled() && needs.config.outputs.test_only == 'true' && steps.build.outcome != 'skipped' }}
+        env:
+          VERIFICATION: ${{ steps.verify.outcome || 'skipped' }}
+        run: >-
+          .venv/bin/python .github/scripts/inspect_test_build.py wheels
+          --manifest work/prepared/build-manifest.json --directory wheelhouse
+          --channel "$CUDA_CHANNEL" --platform linux
+          --verification "$VERIFICATION" --output work/wheel-inspection
       - name: Upload wheel binary
+        if: ${{ !cancelled() && (success() || needs.config.outputs.test_only == 'true') }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT }}
           path: wheelhouse/*.whl
-          if-no-files-found: error
+          if-no-files-found: ${{ needs.config.outputs.test_only == 'true' && 'warn' || 'error' }}
           compression-level: 0
           retention-days: 14
           overwrite: true
@@ -122,7 +139,18 @@ jobs:
           retention-days: 14
           overwrite: true
 
+      - name: Upload test wheel inspection
+        if: ${{ !cancelled() && needs.config.outputs.test_only == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: inspection-${{ env.ARTIFACT }}
+          path: work/wheel-inspection/
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+
   windows:
+    if: needs.config.outputs.windows == 'true'
     name: Windows · Py ${{ matrix.python }}
     needs: config
     runs-on: windows-2022
@@ -138,7 +166,7 @@ jobs:
       PYTHON_VERSION: ${{ matrix.python }}
       CUDA_CHANNEL: ${{ inputs.cuda }}
       EXPECTED_VERSION: ${{ inputs.version }}
-      ARTIFACT: guanaco-py-cuda-windows-x64-${{ inputs.cuda }}-py${{ matrix.python }}
+      ARTIFACT: ${{ needs.config.outputs.artifact_prefix }}guanaco-py-cuda-windows-x64-${{ inputs.cuda }}-py${{ matrix.python }}
     steps:
       - name: Add MSBuild
         uses: microsoft/setup-msbuild@v3
@@ -180,24 +208,36 @@ jobs:
           python --version
           nvcc --version
       - name: Build CUDA wheel
+        id: build
         env:
           CMAKE_GENERATOR: Ninja
           CMAKE_ARGS: ${{ needs.config.outputs.cmake_windows }}
           # CUDA 12.1–12.3 need the legacy MSVC compatibility flags.
           CUDAFLAGS: ${{ needs.config.outputs.cuda_flags }}
         run: python -m build --wheel --outdir wheelhouse work/source
-      - name: Validate integrity, Python ABI and unchanged bindings
+      - name: Validate integrity, Python ABI and bindings
+        id: verify
         run: >-
           python .github/scripts/verify_wheels.py
           --manifest work/prepared/build-manifest.json --directory wheelhouse
           --channel "$env:CUDA_CHANNEL" --platform windows --single --python "$env:PYTHON_VERSION"
           --receipt "work/receipts/$env:ARTIFACT.json"
+      - name: Inspect test wheel contents, including failed/partial builds
+        if: ${{ !cancelled() && needs.config.outputs.test_only == 'true' && steps.build.outcome != 'skipped' }}
+        env:
+          VERIFICATION: ${{ steps.verify.outcome || 'skipped' }}
+        run: >-
+          python .github/scripts/inspect_test_build.py wheels
+          --manifest work/prepared/build-manifest.json --directory wheelhouse
+          --channel "$env:CUDA_CHANNEL" --platform windows
+          --verification "$env:VERIFICATION" --output work/wheel-inspection
       - name: Upload wheel binary
+        if: ${{ !cancelled() && (success() || needs.config.outputs.test_only == 'true') }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT }}
           path: wheelhouse/*.whl
-          if-no-files-found: error
+          if-no-files-found: ${{ needs.config.outputs.test_only == 'true' && 'warn' || 'error' }}
           compression-level: 0
           retention-days: 14
           overwrite: true
@@ -207,5 +247,15 @@ jobs:
           name: receipt-${{ env.ARTIFACT }}
           path: work/receipts/*.json
           if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+      - name: Upload test wheel inspection
+        if: ${{ !cancelled() && needs.config.outputs.test_only == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: inspection-${{ env.ARTIFACT }}
+          path: work/wheel-inspection/
+          if-no-files-found: warn
           retention-days: 14
           overwrite: true
