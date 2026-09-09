@@ -53,7 +53,7 @@ jobs:
         run: gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json
 
       - name: Generate styled PEP 503 indexes
-        run: python .github/scripts/generate-wheel-index.py releases.json site
+        run: python -m guanaco build-index releases.json site
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6

@@ -1,4 +1,10 @@
-"""Install a pinned release wheel, or fetch its checksummed reconstructed source."""
+"""Install a pinned release wheel, or fetch its checksummed reconstructed source.
+
+This helper runs inside the Docker images, so it only needs the standard
+library plus the :mod:`guanaco` package itself, which the Dockerfile copies
+beside this file. It reuses the package's own naming rules, so renaming the
+distribution or the repository cannot silently break an image build.
+"""
 
 from __future__ import annotations
 
@@ -9,33 +15,36 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Docker copies the shared helper beside this file; local use finds the repo.
-if (Path(__file__).resolve().parents[1] / ".github/scripts").is_dir():
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / ".github/scripts"))
+# Docker copies the package beside this file; local use finds the repository.
+ROOT = Path(__file__).resolve().parents[1]
+if (ROOT / "guanaco").is_dir():
+    sys.path.insert(0, str(ROOT))
 
-from download_utils import download
+from guanaco.channels import Channel, Platform  # noqa: E402  (path set up above)
+from guanaco.models import Version, wheel_prefix  # noqa: E402  (path set up above)
+from guanaco.transfer import Downloader  # noqa: E402  (path set up above)
 
-VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+CHECKSUM_LINE = re.compile(r"([a-f0-9]{64})  ([A-Za-z0-9_.-]+)")
+CHECKSUM_LIMIT = 1024**2
+DEFAULT_REPOSITORY = "TheBigEye/guanaco-py"
 
 
-def release_base(repository: str, version: str, channel: str) -> str:
+def release_base(repository: str, version: str, channel: Channel) -> str:
+    """Return the download base URL of one channel's release."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) or any(
         part in (".", "..") for part in repository.split("/")
     ):
         raise ValueError("Expected a GitHub owner/repository")
-    if not VERSION.fullmatch(version):
-        raise ValueError("Expected an explicit stable X.Y.Z version")
-    if not re.fullmatch(r"cpu|avx2|cu[0-9]+", channel):
-        raise ValueError("Invalid build channel")
-    tag = f"v{version}" + ("" if channel == "cpu" else f"-{channel}")
-    return f"https://github.com/{repository}/releases/download/{tag}"
+    Version.parse(version)
+    return f"https://github.com/{repository}/releases/download/{channel.release_tag(version)}"
 
 
 def read_checksums(path: Path) -> dict[str, str]:
-    hashes = {}
+    """Parse a ``SHA256SUMS`` file into ``{filename: digest}``."""
+    hashes: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.fullmatch(r"([a-f0-9]{64})  ([A-Za-z0-9_.-]+)", line)
-        if not match or match[2] in (".", "..") or match[2] in hashes:
+        match = CHECKSUM_LINE.fullmatch(line)
+        if not match or match[2] in hashes:
             raise ValueError("Malformed or duplicate release checksum entry")
         hashes[match[2]] = match[1]
     if not hashes:
@@ -44,48 +53,65 @@ def read_checksums(path: Path) -> dict[str, str]:
 
 
 def checked_asset(base: str, name: str, hashes: dict, destination: Path) -> None:
+    """Download one release asset and verify it against `hashes`."""
     expected = hashes.get(name)
-    if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected):
+    if not expected:
         raise ValueError(f"No release checksum for {name}")
-    download(f"{base}/{name}", destination, expected_sha256=expected)
+    Downloader().fetch(f"{base}/{name}", destination, expected_sha256=expected)
 
 
-def wheel_name(version: str, channel: str) -> str:
-    if platform.machine().lower() not in ("x86_64", "amd64") or sys.platform != "linux":
+def wheel_name(package: str, version: str, channel: Channel) -> str:
+    """Return the wheel filename for this interpreter, as the verifier expects."""
+    if sys.platform != "linux" or platform.machine().lower() not in ("x86_64", "amd64"):
         raise ValueError("These Docker images require linux/amd64")
-    cp = f"cp{sys.version_info.major}{sys.version_info.minor}"
-    policy = "manylinux_2_34_x86_64" if channel in ("cpu", "avx2") else "linux_x86_64"
-    return f"guanaco_py-{version}-{cp}-{cp}-{policy}.whl"
+    python = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    policy = channel.wheel_platform(Platform.LINUX)
+    return f"{wheel_prefix(package)}-{version}-{python}-{python}-{policy}.whl"
+
+
+def install_wheel(wheel: Path) -> None:
+    """Install the downloaded wheel; only its dependencies come from PyPI."""
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--no-cache-dir", f"{wheel}[server]"],
+        check=True,
+    )
 
 
 def main() -> None:
+    """Fetch and install a release wheel, or fetch its reconstructed source."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["wheel", "source"])
-    parser.add_argument("--repository", default="TheBigEye/guanaco-py")
+    parser.add_argument("--repository", default=DEFAULT_REPOSITORY)
+    parser.add_argument("--package", help="Distribution name (default: from --repository)")
     parser.add_argument("--version", required=True)
-    parser.add_argument("--channel", default="cpu")
+    parser.add_argument("--channel", default=Channel("cpu"), type=Channel)
     parser.add_argument("--directory", type=Path, default=Path("/tmp/guanaco-release"))
-    args = parser.parse_args()
-    # Reconstructed source belongs to the CPU release, regardless of build backend.
-    channel = "cpu" if args.mode == "source" else args.channel
-    base = release_base(args.repository, args.version, channel)
-    name = wheel_name(args.version, channel) if args.mode == "wheel" else None
-    checksums = args.directory / "SHA256SUMS"
-    download(base + "/SHA256SUMS", checksums, max_bytes=1024**2)
+    arguments = parser.parse_args()
+
+    package = arguments.package or arguments.repository.rsplit("/", 1)[-1].casefold()
+    # The reconstructed source always belongs to the CPU release.
+    channel = Channel("cpu") if arguments.mode == "source" else arguments.channel
+    base = release_base(arguments.repository, arguments.version, channel)
+    arguments.directory.mkdir(parents=True, exist_ok=True)
+    checksums = arguments.directory / "SHA256SUMS"
+    Downloader(max_bytes=CHECKSUM_LIMIT).fetch(base + "/SHA256SUMS", checksums)
     hashes = read_checksums(checksums)
-    if args.mode == "source":
+
+    if arguments.mode == "source":
         checked_asset(
-            base, f"guanaco-source-{args.version}.tar.gz", hashes, args.directory / "source.tar.gz"
+            base,
+            f"guanaco-source-{arguments.version}.tar.gz",
+            hashes,
+            arguments.directory / "source.tar.gz",
         )
-        checked_asset(base, "guanaco-build.json", hashes, args.directory / "build-manifest.json")
+        checked_asset(
+            base, "guanaco-build.json", hashes, arguments.directory / "build-manifest.json"
+        )
         return
-    wheel = args.directory / name
-    checked_asset(base, name, hashes, wheel)
-    # Install the local Guanaco wheel; only dependencies come from PyPI.
-    # No Pages propagation race, fallback source build or upstream-name alias.
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--no-cache-dir", f"{wheel}[server]"], check=True
-    )
+
+    wheel = arguments.directory / wheel_name(package, arguments.version, channel)
+    checked_asset(base, wheel.name, hashes, wheel)
+    install_wheel(wheel)
 
 
 if __name__ == "__main__":

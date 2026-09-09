@@ -38,7 +38,7 @@ Unlike **Check Upstream and Release**, this workflow does not look for missing G
 
 It uses the release workflow's **upstream selection rules** and pins the selected release tag to a commit SHA. It deliberately uses a fresh test plan, not a historical Guanaco family's frozen plan. Compare the source SHA/tag, recipe revision, selected matrix and patch report before drawing conclusions about a later production run.
 
-`prepare_source.py` is reused unchanged, including the current `.github/patches/*.patch` mechanism. This feature does not change patch application or introduce a new patch policy.
+`python -m guanaco prepare-source` is reused unchanged, including the current `.github/patches/*.patch` mechanism. This feature does not change patch application or introduce a new patch policy.
 
 ## Downloadable artifacts
 

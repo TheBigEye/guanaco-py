@@ -190,20 +190,41 @@ The bundled `llama_cpp.server` follows upstream. Guanaco no longer carries a sep
 
 Changes here should focus on **build recipes, packaging, release automation, Docker and the wheel index**. Binding fixes belong upstream; no local runtime patch queue is maintained.
 
+The automation is one Python package, `guanaco/`, with a single entry point and
+one module per job. Every repository, package, version and channel comes from
+[`.github/build-matrix.json`](.github/build-matrix.json).
+
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
-python -m ruff check .github/scripts docker tests
-python -m ruff format --check .github/scripts docker tests
+python -m ruff check guanaco docker tests
+python -m ruff format --check guanaco docker tests
+
+python -m guanaco explain                 # what the configuration resolves to
+python -m guanaco plan --output work/plan.json
+python -m guanaco prepare-source --plan work/plan.json --output work/prepared
 ```
 
+`python -m guanaco --help` lists every subcommand:
+`plan`, `plan-test`, `prepare-source`, `unpack-source`,
+`configure {cpu,cuda,matrix,docker}`, `verify-wheels`, `validate-receipts`,
+`publish`, `build-index`, `inspect {source,wheels,result}` and `explain`.
+Global `--matrix` and `--repository` flags override the configuration, which is
+what makes a fork reusable without editing code.
+
+Only `prepare-source` needs `requirements-ci.txt` (`tomlkit`); every other
+command runs on a bare interpreter with the standard library alone.
+
 The supported toolchain matrix is in [`.github/build-matrix.json`](.github/build-matrix.json). Offline tests cover the automation on Python 3.9, 3.13 and 3.14 in CI, with lint/format checks and an 85% coverage floor. CPU and AVX2 share one parametrized builder. Wheel jobs validate package contents, and CPU/AVX2 jobs import the installed wheel and call its native API. CUDA jobs validate wheel contents but do not claim GPU inference coverage on GPU-less runners.
+
+See [Automation & maintenance](docs/automation.md) for the architecture, the
+module map and the invariants each stage protects.
 
 ## Manual wheel test builds
 
 Use **Actions → Test Wheel Build (no release)** to compile a selected upstream version before a real release. Enable any combination of CPU, AVX2 and CUDA; choose CUDA channels, Python versions and Linux/Windows targets. Defaults produce just **two CPU wheels**: Python 3.13 on both systems.
 
-The workflow reuses the release builders and current patches, including for versions already published. It uploads downloadable wheels, source/patch diagnostics and a final verification report — **no releases, tags, Pages or Docker publication**. Failed test jobs retain any wheels already produced, marked as test artifacts for investigation, not as validated release binaries.
+The workflow reuses the release builders and current patches, including for versions already published. It uploads downloadable wheels, source/patch diagnostics and a final verification report - **no releases, tags, Pages or Docker publication**. Failed test jobs retain any wheels already produced, marked as test artifacts for investigation, not as validated release binaries.
 
 See [Manual test builds](docs/test-builds.md) for inputs, examples, artifact names and limitations. Use a separate environment when installing test wheels, since their filenames/version can match an existing release.
 

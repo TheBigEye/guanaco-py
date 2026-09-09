@@ -7,11 +7,11 @@ Guanaco is a build/distribution repository. The binding source of truth is a **p
 ```text
 07:00 Argentina / 10:00 UTC, or workflow_dispatch
                     |
-            check_upstream.py
+          python -m guanaco plan
        stable X.Y.Z + frozen family plan
        + early read-only tag preflight
                     |
-            prepare_source.py
+       python -m guanaco prepare-source
        immutable ZIPs + exact gitlinks
        + .github/patches/ (strict, no fuzz)
        + distribution/build metadata
@@ -20,19 +20,23 @@ Guanaco is a build/distribution repository. The binding source of truth is a **p
              /      |      \
            CPU     AVX2    CUDA matrix
              \      |      /
-          verify_wheels.py (each job)
+   python -m guanaco verify-wheels (each job)
        binaries + small validation receipts
                     |
-          validate_receipts.py
+     python -m guanaco validate-receipts
        full matrix gate + global preflight
                     |
-          publish_release.py (per channel)
+       python -m guanaco publish (per channel)
        recheck receipt hashes and binaries
        draft -> upload -> verify -> publish
                     |
                /         \
         GitHub Pages      Docker / GHCR
 ```
+
+Every step above is one subcommand of a single entry point, `python -m guanaco`.
+The whole pipeline lives in the `guanaco/` package, one module per job; see
+[Module map](#module-map) below.
 
 No bindings, CMake project or Git submodule are stored in the working tree. Downloaded source, compiled objects, wheels and generated indexes go into ignored temporary/output directories.
 
@@ -90,7 +94,7 @@ The Guanaco tag points to the **build-recipe commit**, not an upstream source co
 
 ## Immutable source preparation
 
-`prepare_source.py` downloads:
+`python -m guanaco prepare-source` downloads:
 
 ```text
 https://codeload.github.com/JamePeng/llama-cpp-python/zip/<resolved-commit>
@@ -120,11 +124,11 @@ Every runtime source file is hashed right after download, and again after any lo
 
 ### Local patches: a narrow, explicit, provenance-tracked exception
 
-`.github/patches/*.patch` holds small, hand-written, hand-reviewed unified diffs, applied in filename order by `prepare_source.py` immediately after the upstream download and before metadata adaptation. Each one:
+`.github/patches/*.patch` holds small, hand-written, hand-reviewed unified diffs, applied in filename order by `python -m guanaco prepare-source` immediately after the upstream download and before metadata adaptation. Each one:
 
-- Must apply with `git apply` **exactly** — full context match, no fuzz. If upstream changes the surrounding code enough that a patch no longer applies, the build fails right there with the patch's name and `git apply`'s own error, instead of silently dropping the fix, silently skipping the file, or fuzzy-applying it onto code nobody has reviewed. Refresh or retire the patch, then re-run.
+- Must apply with `git apply` **exactly**, full context match, no fuzz. If upstream changes the surrounding code enough that a patch no longer applies, the build fails right there with the patch's name and `git apply`'s own error, instead of silently dropping the fix, silently skipping the file, or fuzzy-applying it onto code nobody has reviewed. Refresh or retire the patch, then re-run.
 - Must declare its own target file(s) as normal `+++ b/<path>` diff headers; a patch aimed at a file upstream no longer ships also fails closed rather than being silently skipped.
-- Is hashed before and after, and its filename, its own SHA-256, its target file(s), and their before/after hashes are all recorded in `build-manifest.json` under `applied_patches`. `runtime_sha256` (what `verify_wheels.py` checks the built wheel against) reflects the tree **after** patches are applied; the untouched download is kept separately as `upstream_runtime_sha256` purely so a patched file stays easy to diff against the pristine release it came from.
+- Is hashed before and after, and its filename, its own SHA-256, its target file(s), and their before/after hashes are all recorded in `build-manifest.json` under `applied_patches`. `runtime_sha256` (what `python -m guanaco verify-wheels` checks the built wheel against) reflects the tree **after** patches are applied; the untouched download is kept separately as `upstream_runtime_sha256` purely so a patched file stays easy to diff against the pristine release it came from.
 - Is exactly as invisible to the metadata-adaptation invariant as any other runtime file: `adapt_metadata()` still may not change a single byte under `llama_cpp/`, patched or not, and preparation still fails if it does.
 
 This is a deliberate, narrow carve-out for hand-reviewed behavioral fixes upstream hasn't (yet) merged, not a general patch queue: keep `.github/patches/` small, keep each patch scoped to one concern, and prefer upstreaming the fix instead when practical, since every patch is one more thing that can drift and demand attention on the next import.
@@ -170,7 +174,7 @@ The default matrix is configured in `.github/build-matrix.json`:
 - Portable CPU, AVX2 and seven CUDA channels.
 - Twelve wheels per channel: six Python versions × two platforms; 108 wheels for a complete new nine-channel family.
 
-CPU/AVX2 use the same parametrized reusable workflow; the AVX2 file is a small wrapper. `configure_build.py` resolves their fixed SIMD flags and the CUDA toolkit/architectures/Python versions from the **prepared manifest**, not from today's config file. Existing compiler/toolkit choices are retained. `auditwheel --only-plat` keeps the intended single manylinux filename/tag rather than adding a second, older compatibility tag. Toolchains may still need maintenance if upstream changes its requirements.
+CPU/AVX2 use the same parametrized reusable workflow; the AVX2 file is a small wrapper. `python -m guanaco configure` resolves their fixed SIMD flags and the CUDA toolkit/architectures/Python versions from the **prepared manifest**, not from today's config file. Existing compiler/toolkit choices are retained. `auditwheel --only-plat` keeps the intended single manylinux filename/tag rather than adding a second, older compatibility tag. Toolchains may still need maintenance if upstream changes its requirements.
 
 Checks include:
 
@@ -248,38 +252,76 @@ See [Manual test builds](test-builds.md) for the seven inputs, examples and the 
 
 ```bash
 python -m pip install -r requirements-dev.txt
-python -m pytest -q --cov=.github/scripts --cov=docker --cov=docker/open_llama --cov-fail-under=85
-python -m ruff check .github/scripts docker tests
-python -m ruff format --check .github/scripts docker tests
-python -m compileall -q .github/scripts docker
+python -m pytest -q --cov=guanaco --cov=docker --cov-report=term-missing --cov-fail-under=85
+python -m ruff check guanaco docker tests
+python -m ruff format --check guanaco docker tests
+python -m compileall -q guanaco docker
 
 # Read-only discovery (GH_TOKEN is optional locally, useful for API rate limits).
-python .github/scripts/check_upstream.py --output work/plan.json
+python -m guanaco plan --output work/plan.json
 
 # Download and prepare exactly the selected release; does not publish anything.
-python .github/scripts/prepare_source.py --plan work/plan.json --output work/prepared
-python .github/scripts/unpack_source.py work/prepared work/source
+python -m guanaco prepare-source --plan work/plan.json --output work/prepared
+python -m guanaco unpack-source work/prepared work/source
+
+# Show every value the configuration resolves to.
+python -m guanaco explain
 ```
 
 `make check` runs tests, Ruff lint/format checks, compilation checks and `git diff --check`; `make format` applies the Python formatter. CI tests Python 3.9, 3.13 and 3.14 on Linux/Windows, enforces an 85% line-coverage floor, and validates workflows with actionlint/ShellCheck.
 
-`publish_release.py --plan work/plan.json --preflight` only reads GitHub state. Staging is also a dry run unless `--publish` is supplied. Single-channel publication additionally requires the full-matrix `--gate` artifact. Do not use a local raw `linux_x86_64` CPU build as a substitute for the manylinux-certified CI artifact: release validation intentionally rejects that tag for CPU/AVX2.
+`python -m guanaco publish --plan work/plan.json --preflight` only reads GitHub state. Staging is also a dry run unless `--publish` is supplied. Single-channel publication additionally requires the full-matrix `--gate` artifact. Do not use a local raw `linux_x86_64` CPU build as a substitute for the manylinux-certified CI artifact: release validation intentionally rejects that tag for CPU/AVX2.
 
 Unit tests are offline and do not download models. They exercise release selection, pagination, version/tag mismatch, source pinning, safe extraction, metadata adaptation, archive integrity, wheel identity, incomplete matrices, draft recovery, repeat-run idempotence, index isolation and workflow wiring. They do not replace real Windows/CUDA or model-inference testing.
 
-## Script map
+## Module map
 
-| Script/module | Responsibility |
+| Module | Responsibility |
 |---|---|
-| `release_common.py` | Version/channel policy, provenance validation, safe outputs and GitHub API reads/writes |
-| `check_upstream.py` | Select a version, freeze the family snapshot, plan missing channels |
-| `download_utils.py` / `archive_utils.py` | Bounded HTTPS downloads and transactional, portable extraction |
-| `prepare_source.py` / `unpack_source.py` | Prepare metadata-only source changes plus any reviewed `.github/patches/`; verify and unpack the shared archive |
-| `configure_build.py` | Testable CPU/CUDA settings and Docker image tags; no inline configuration Python in YAML |
-| `verify_wheels.py` | Validate wheel contents and produce a small receipt |
-| `validate_receipts.py` | Require the full requested build matrix and emit its publication gate |
-| `publish_release.py` | Preflight destinations, stage one/all channels, upload drafts, protect public assets |
-| `generate-wheel-index.py` / `site_utils.py` | Render the PEP 503 site and safely replace an owned previous output |
+| `guanaco/channels.py` | Build channels (`cpu`, `avx2`, `cuNNN`) and target platforms: release tags and wheel platform tags |
+| `guanaco/settings.py` | Load and validate `build-matrix.json`; the only place a name or a version is configured |
+| `guanaco/models.py` | The documents the pipeline exchanges: plan, manifest, receipt, gate and provenance |
+| `guanaco/transfer.py` | Bounded HTTPS downloads and transactional, path-safe extraction |
+| `guanaco/github_api.py` | A read-mostly GitHub REST client; writes only when constructed as writable |
+| `guanaco/source.py` | Download, patch and package the frozen upstream source |
+| `guanaco/toolchain.py` | Turn a plan into compiler flags, job settings and container tags |
+| `guanaco/wheels.py` | Validate wheels against a manifest and emit receipts |
+| `guanaco/releases.py` | Upstream discovery, release planning, receipt gating and conservative publication |
+| `guanaco/catalog.py` | Render the PEP 503 index and safely replace an owned previous site |
+| `guanaco/reports.py` | The diagnostics a rehearsal produces: source, wheels and result |
+| `guanaco/cli.py` | The single `python -m guanaco` entry point and its argument parser |
 | `docker/fetch_release.py` | Resolve and install an exact, checksummed release asset |
 
-All modules above live in `.github/scripts/` except the explicitly prefixed Docker helper. Tests use shared synthetic fixtures under `tests/`; their native headers are intentionally not executable libraries. Actual wheel installation, inference, Docker execution and GPU/Windows compatibility require integration testing in the relevant environment.
+Dependencies flow one way: `channels` → `settings` → `models` → the rest, so no
+module imports a layer above it.
+
+Nothing the configuration already knows is written twice. `configure cpu` emits
+`package` and `artifact`; `configure cuda` emits `package`, `artifact_linux` and
+`artifact_windows`; the workflows interpolate those outputs instead of spelling
+out a distribution name. Renaming the distribution or forking the repository is
+therefore a change to `build-matrix.json` and nothing else, and a unit test
+fails if any workflow file ever mentions the package or repository name again.
+
+### Command map
+
+| Command | Replaces |
+|---|---|
+| `python -m guanaco plan` | `check_upstream.py` |
+| `python -m guanaco plan-test` | `plan_test_build.py` |
+| `python -m guanaco prepare-source` | `prepare_source.py` |
+| `python -m guanaco unpack-source` | `unpack_source.py` |
+| `python -m guanaco configure {cpu,cuda,matrix,docker}` | `configure_build.py` |
+| `python -m guanaco verify-wheels` | `verify_wheels.py` |
+| `python -m guanaco validate-receipts` | `validate_receipts.py` |
+| `python -m guanaco publish` | `publish_release.py` |
+| `python -m guanaco build-index` | `generate-wheel-index.py` |
+| `python -m guanaco inspect {source,wheels,result}` | `inspect_test_build.py` |
+| `python -m guanaco explain` | (new) prints the resolved configuration |
+
+Every module above is stdlib-only. Only `prepare-source` needs a third-party
+package (`tomlkit`, from `requirements-ci.txt`) because it is the one step that
+rewrites `pyproject.toml`; planning, validation, publication and indexing run on
+a bare interpreter. Tests use shared synthetic fixtures under `tests/`; their
+native headers are intentionally not executable libraries. Actual wheel
+installation, inference, Docker execution and GPU/Windows compatibility require
+integration testing in the relevant environment.

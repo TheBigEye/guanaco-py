@@ -1,4 +1,6 @@
-"""Minimal upstream source layout used by offline preparation tests."""
+"""A minimal upstream source layout, used by the offline preparation tests."""
+
+from __future__ import annotations
 
 import zipfile
 
@@ -30,26 +32,36 @@ input = "llama_cpp/__init__.py"
 Homepage = "https://github.com/upstream/project"
 """
 
+GITMODULES = """[submodule "vendor/llama.cpp"]
+\tpath = vendor/llama.cpp
+\turl = https://github.com/ggml-org/llama.cpp
+"""
 
-def fixture_source(tmp_path, version="0.3.49"):
+
+def fixture_source(tmp_path, version: str = "0.3.49"):
+    """Create the smallest source tree that looks like the upstream bindings."""
     source = tmp_path / "source"
     (source / "llama_cpp").mkdir(parents=True)
-    (source / "llama_cpp/__init__.py").write_text(f'__version__ = "{version}"\n')
+    (source / "llama_cpp" / "__init__.py").write_text(f'__version__ = "{version}"\n')
     (source / "pyproject.toml").write_text(METADATA)
     (source / "LICENSE.md").write_text("MIT - original attribution")
     return source
 
 
-def zip_source(path, files):
+def zip_source(path, files: dict) -> None:
+    """Write a GitHub-style ZIP: one root directory containing `files`."""
     with zipfile.ZipFile(path, "w") as archive:
         for name, data in files.items():
             archive.writestr("repo-sha/" + name, data)
 
 
 def raw_zip_member(name: str) -> zipfile.ZipInfo:
-    """Keep adversarial ZIP names identical on every test host."""
+    """Keep an adversarial ZIP name identical on every test host.
+
+    ``ZipInfo(name)`` would replace backslashes on Windows and truncate NUL
+    bytes, so both fields are set afterwards and the archive really contains
+    the requested name.
+    """
     member = zipfile.ZipInfo()
-    # ZipInfo(name) would replace backslashes on Windows and truncate NULs.
-    # Set both fields afterwards so the ZIP really contains the requested name.
     member.filename = member.orig_filename = name
     return member

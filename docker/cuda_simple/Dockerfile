@@ -8,10 +8,11 @@ ARG GUANACO_REPOSITORY=TheBigEye/guanaco-py
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip ca-certificates libgomp1 \
     && rm -rf /var/lib/apt/lists/*
-COPY docker/fetch_release.py .github/scripts/download_utils.py /tmp/
+COPY docker/fetch_release.py /tmp/
+COPY guanaco /tmp/guanaco/
 RUN python3 /tmp/fetch_release.py wheel --version "${GUANACO_VERSION}" \
     --channel "${GUANACO_CHANNEL}" --repository "${GUANACO_REPOSITORY}" \
-    && rm -rf /tmp/guanaco-release /tmp/fetch_release.py /tmp/download_utils.py /tmp/__pycache__
+    && rm -rf /tmp/guanaco-release /tmp/fetch_release.py /tmp/guanaco /tmp/__pycache__
 
 ENV HOST=0.0.0.0 PORT=8000
 WORKDIR /app

@@ -43,7 +43,7 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           PROMOTE_LATEST: ${{ inputs.promote_latest }}
-        run: python .github/scripts/configure_build.py docker
+        run: python -m guanaco configure docker
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4.6.0
         with:

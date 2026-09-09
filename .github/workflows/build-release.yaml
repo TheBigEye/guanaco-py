@@ -49,11 +49,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_VERSION: ${{ inputs.version || '' }}
-        run: python .github/scripts/check_upstream.py --version "$REQUESTED_VERSION" --output work/plan.json
+        run: python -m guanaco plan --version "$REQUESTED_VERSION" --output work/plan.json
       - name: Fail early on conflicting release tags or draft recipes (read-only)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/publish_release.py --plan work/plan.json --preflight
+        run: python -m guanaco publish --plan work/plan.json --preflight
       - uses: actions/upload-artifact@v7
         with:
           name: upstream-plan
@@ -83,7 +83,7 @@ jobs:
       - name: Download ZIPs, resolve gitlinks and adapt distribution metadata
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/prepare_source.py --plan work/plan.json --output work/prepared
+        run: python -m guanaco prepare-source --plan work/plan.json --output work/prepared
       - uses: actions/upload-artifact@v7
         with:
           name: guanaco-source
@@ -155,18 +155,18 @@ jobs:
       - name: Download receipts, not the entire multi-GB wheel matrix
         uses: actions/download-artifact@v8
         with:
-          pattern: receipt-guanaco-py-*
+          pattern: receipt-*
           path: work/receipts
           merge-multiple: true
       - name: Require every requested Python/platform receipt
         run: >-
-          python .github/scripts/validate_receipts.py
+          python -m guanaco validate-receipts
           --plan work/plan.json --prepared work/prepared
           --receipts work/receipts --output work/validated-build.json
       - name: Check every release/tag conflict before any publisher can start
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/publish_release.py --plan work/plan.json --preflight
+        run: python -m guanaco publish --plan work/plan.json --preflight
       - uses: actions/upload-artifact@v7
         with:
           name: validated-build
@@ -220,7 +220,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BUILD_CHANNEL: ${{ matrix.channel }}
         run: >-
-          python .github/scripts/publish_release.py
+          python -m guanaco publish
           --plan work/plan.json --prepared work/prepared --artifacts work/artifacts
           --output work/publish --channel "$BUILD_CHANNEL"
           --gate work/validated-build.json --publish

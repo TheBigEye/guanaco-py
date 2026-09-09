@@ -35,7 +35,7 @@ jobs:
           path: work/prepared
       - name: Resolve the CPU platform matrix (both systems for releases)
         id: config
-        run: python .github/scripts/configure_build.py matrix --manifest work/prepared/build-manifest.json
+        run: python -m guanaco configure matrix --manifest work/prepared/build-manifest.json
 
   build:
     needs: config
@@ -71,12 +71,12 @@ jobs:
           path: work/prepared
 
       - name: Verify and unpack source
-        run: python .github/scripts/unpack_source.py work/prepared work/source --version "$EXPECTED_VERSION"
+        run: python -m guanaco unpack-source work/prepared work/source --version "$EXPECTED_VERSION"
 
       - name: Resolve frozen Python matrix and CPU flags
         id: config
         run: >-
-          python .github/scripts/configure_build.py cpu
+          python -m guanaco configure cpu
           --manifest work/prepared/build-manifest.json
           --channel "$BUILD_CHANNEL" --platform "$WHEEL_PLATFORM"
           --version "$EXPECTED_VERSION"
@@ -88,6 +88,7 @@ jobs:
           package-dir: work/source
           output-dir: wheelhouse
         env:
+          PACKAGE: ${{ steps.config.outputs.package }}
           CIBW_BUILD: ${{ steps.config.outputs.build }}
           CIBW_ARCHS: ${{ matrix.cibw_archs }}
           CIBW_SKIP: "*-musllinux_*"
@@ -103,7 +104,7 @@ jobs:
             auditwheel repair --only-plat --plat manylinux_2_34_x86_64 -w {dest_dir} {wheel}
           CIBW_TEST_COMMAND: >-
             python -c "import importlib.metadata as m; import llama_cpp;
-            assert m.version('guanaco-py') == llama_cpp.__version__;
+            assert m.version('$PACKAGE') == llama_cpp.__version__;
             print(llama_cpp.llama_print_system_info().decode())"
 
       - name: Validate the selected Python matrix, file integrity and bindings
@@ -111,7 +112,7 @@ jobs:
         env:
           ARTIFACT: ${{ steps.config.outputs.artifact }}
         run: >-
-          python .github/scripts/verify_wheels.py
+          python -m guanaco verify-wheels
           --manifest work/prepared/build-manifest.json --directory wheelhouse
           --channel "$BUILD_CHANNEL" --platform "$WHEEL_PLATFORM"
           --receipt "work/receipts/$ARTIFACT.json"
@@ -121,7 +122,7 @@ jobs:
         env:
           VERIFICATION: ${{ steps.verify.outcome || 'skipped' }}
         run: >-
-          python .github/scripts/inspect_test_build.py wheels
+          python -m guanaco inspect wheels
           --manifest work/prepared/build-manifest.json --directory wheelhouse
           --channel "$BUILD_CHANNEL" --platform "$WHEEL_PLATFORM"
           --verification "$VERIFICATION" --output work/wheel-inspection

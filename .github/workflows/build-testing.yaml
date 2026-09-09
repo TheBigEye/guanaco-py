@@ -32,11 +32,11 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - name: Lint and formatting
         run: |
-          python -m ruff check .github/scripts docker tests
-          python -m ruff format --check .github/scripts docker tests
+          python -m ruff check guanaco docker tests
+          python -m ruff format --check guanaco docker tests
       - name: Test policy, archives, wheels, publication and workflow contracts
-        run: python -m pytest -q --cov=.github/scripts --cov=docker --cov=docker/open_llama --cov-report=term-missing --cov-fail-under=85
-      - run: python -m compileall -q .github/scripts docker
+        run: python -m pytest -q --cov=guanaco --cov=docker --cov-report=term-missing --cov-fail-under=85
+      - run: python -m compileall -q guanaco docker
       - run: git diff --check
 
   workflows:

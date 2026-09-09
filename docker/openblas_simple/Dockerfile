@@ -6,11 +6,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libopenblas-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 RUN python -m pip install --no-cache-dir build cmake ninja
-COPY docker/fetch_release.py .github/scripts/download_utils.py /tmp/
-COPY .github/scripts/unpack_source.py .github/scripts/archive_utils.py /tmp/
+COPY docker/fetch_release.py /tmp/
+COPY guanaco /tmp/guanaco/
 RUN python /tmp/fetch_release.py source --version "${GUANACO_VERSION}" \
     --repository "${GUANACO_REPOSITORY}" --directory /tmp/prepared \
-    && python /tmp/unpack_source.py /tmp/prepared /src --version "${GUANACO_VERSION}"
+    && PYTHONPATH=/tmp python -m guanaco unpack-source /tmp/prepared /src --version "${GUANACO_VERSION}" \
+    && rm -rf /tmp/guanaco /tmp/fetch_release.py /tmp/__pycache__
 ENV CMAKE_BUILD_PARALLEL_LEVEL=2
 RUN CMAKE_ARGS="-DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" \
     python -m build --wheel --outdir /wheels /src

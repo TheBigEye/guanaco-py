@@ -50,7 +50,7 @@ jobs:
           CUDA_CHANNEL: ${{ inputs.cuda }}
           EXPECTED_VERSION: ${{ inputs.version }}
         run: >-
-          python .github/scripts/configure_build.py cuda
+          python -m guanaco configure cuda
           --manifest work/prepared/build-manifest.json
           --channel "$CUDA_CHANNEL" --version "$EXPECTED_VERSION"
 
@@ -70,7 +70,7 @@ jobs:
       PYTHON_VERSION: ${{ matrix.python }}
       CUDA_CHANNEL: ${{ inputs.cuda }}
       EXPECTED_VERSION: ${{ inputs.version }}
-      ARTIFACT: ${{ needs.config.outputs.artifact_prefix }}guanaco-py-cuda-linux-x64-${{ inputs.cuda }}-py${{ matrix.python }}
+      ARTIFACT: ${{ needs.config.outputs.artifact_linux }}-py${{ matrix.python }}
     steps:
       - name: Install build tools
         env:
@@ -94,7 +94,7 @@ jobs:
           name: guanaco-source
           path: work/prepared
       - name: Verify and unpack source
-        run: .venv/bin/python .github/scripts/unpack_source.py work/prepared work/source --version "$EXPECTED_VERSION"
+        run: .venv/bin/python -m guanaco unpack-source work/prepared work/source --version "$EXPECTED_VERSION"
       - name: Show toolchain
         run: |
           .venv/bin/python --version
@@ -107,7 +107,7 @@ jobs:
       - name: Validate integrity, Python ABI and bindings
         id: verify
         run: >-
-          .venv/bin/python .github/scripts/verify_wheels.py
+          .venv/bin/python -m guanaco verify-wheels
           --manifest work/prepared/build-manifest.json --directory wheelhouse
           --channel "$CUDA_CHANNEL" --platform linux --single --python "$PYTHON_VERSION"
           --receipt "work/receipts/$ARTIFACT.json"
@@ -116,7 +116,7 @@ jobs:
         env:
           VERIFICATION: ${{ steps.verify.outcome || 'skipped' }}
         run: >-
-          .venv/bin/python .github/scripts/inspect_test_build.py wheels
+          .venv/bin/python -m guanaco inspect wheels
           --manifest work/prepared/build-manifest.json --directory wheelhouse
           --channel "$CUDA_CHANNEL" --platform linux
           --verification "$VERIFICATION" --output work/wheel-inspection
@@ -166,7 +166,7 @@ jobs:
       PYTHON_VERSION: ${{ matrix.python }}
       CUDA_CHANNEL: ${{ inputs.cuda }}
       EXPECTED_VERSION: ${{ inputs.version }}
-      ARTIFACT: ${{ needs.config.outputs.artifact_prefix }}guanaco-py-cuda-windows-x64-${{ inputs.cuda }}-py${{ matrix.python }}
+      ARTIFACT: ${{ needs.config.outputs.artifact_windows }}-py${{ matrix.python }}
     steps:
       - name: Add MSBuild
         uses: microsoft/setup-msbuild@v3
@@ -202,7 +202,7 @@ jobs:
           name: guanaco-source
           path: work/prepared
       - name: Verify and unpack source
-        run: python .github/scripts/unpack_source.py work/prepared work/source --version "$env:EXPECTED_VERSION"
+        run: python -m guanaco unpack-source work/prepared work/source --version "$env:EXPECTED_VERSION"
       - name: Show toolchain
         run: |
           python --version
@@ -218,7 +218,7 @@ jobs:
       - name: Validate integrity, Python ABI and bindings
         id: verify
         run: >-
-          python .github/scripts/verify_wheels.py
+          python -m guanaco verify-wheels
           --manifest work/prepared/build-manifest.json --directory wheelhouse
           --channel "$env:CUDA_CHANNEL" --platform windows --single --python "$env:PYTHON_VERSION"
           --receipt "work/receipts/$env:ARTIFACT.json"
@@ -227,7 +227,7 @@ jobs:
         env:
           VERIFICATION: ${{ steps.verify.outcome || 'skipped' }}
         run: >-
-          python .github/scripts/inspect_test_build.py wheels
+          python -m guanaco inspect wheels
           --manifest work/prepared/build-manifest.json --directory wheelhouse
           --channel "$env:CUDA_CHANNEL" --platform windows
           --verification "$env:VERIFICATION" --output work/wheel-inspection

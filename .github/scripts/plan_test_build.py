@@ -129,7 +129,7 @@ def main() -> None:
         cuda=[c for c in plan["missing_channels"] if c.startswith("cu")],
     )
     summary = (
-        f"## Manual test build — NOT a release\n\n"
+        f"## Manual test build - NOT a release\n\n"
         f"- Upstream: `{plan['version']}` / `{plan['upstream']['tag']}`\n"
         f"- Source SHA: `{plan['upstream']['commit']}`\n"
         f"- Channels: {', '.join(plan['missing_channels'])}\n"

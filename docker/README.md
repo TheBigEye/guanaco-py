@@ -80,7 +80,7 @@ python docker/open_llama/hug_model.py OWNER/MODEL MODEL.gguf \
 
 All Dockerfiles accept `GUANACO_REPOSITORY` (default `TheBigEye/guanaco-py`). `fetch_release.py` constructs the requested channel tag, downloads `SHA256SUMS`, fetches the exact Python/platform asset, and verifies it before installation. There is no fallback to PyPI's `llama-cpp-python` or to upstream `main`.
 
-The Dockerfiles copy the same `download_utils.py` used by CI; the OpenBLAS builder also copies the shared archive extractor. HTTPS reads have bounded retries and size limits. Downloads are verified in a temporary file, so a checksum failure does not replace an existing good file with corrupt data.
+The Dockerfiles copy the `guanaco/` package beside `fetch_release.py`, so the images reuse the same download, archive and manifest code as CI instead of a second copy. The OpenBLAS builder unpacks the source with `python -m guanaco unpack-source`. HTTPS reads have bounded retries and size limits. Downloads are verified in a temporary file, so a checksum failure does not replace an existing good file with corrupt data.
 
 The `server` extra and its dependencies follow the selected upstream release. Python dependencies still come from PyPI; pinning the Guanaco wheel is not a lockfile for the complete container environment.
 

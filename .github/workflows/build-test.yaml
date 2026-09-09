@@ -72,7 +72,7 @@ jobs:
           PYTHON_VERSIONS: ${{ inputs.python_versions }}
           SYSTEMS: ${{ inputs.systems }}
         run: >-
-          python .github/scripts/plan_test_build.py
+          python -m guanaco plan-test
           --version "$REQUESTED_VERSION" --cpu "$BUILD_CPU"
           --avx2 "$BUILD_AVX2" --cuda "$BUILD_CUDA" --cuda-channels "$CUDA_CHANNELS"
           --python-versions "$PYTHON_VERSIONS" --systems "$SYSTEMS"
@@ -112,11 +112,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -o pipefail
-          python .github/scripts/prepare_source.py --plan work/test-plan.json --output work/prepared 2>&1 | tee work/preparation.log
+          python -m guanaco prepare-source --plan work/test-plan.json --output work/prepared 2>&1 | tee work/preparation.log
       - name: Collect patches, source details and preparation logs
         if: ${{ !cancelled() && steps.plan.outcome == 'success' }}
         run: >-
-          python .github/scripts/inspect_test_build.py source
+          python -m guanaco inspect source
           --plan work/test-plan.json --prepared work/prepared
           --log work/preparation.log --output work/inspection
       - name: Upload the shared prepared source
@@ -196,7 +196,7 @@ jobs:
         uses: actions/download-artifact@v8
         continue-on-error: true
         with:
-          pattern: receipt-test-guanaco-py-*
+          pattern: receipt-test-*
           path: work/receipts
           merge-multiple: true
       - name: Require every requested build and receipt, without publishing
@@ -205,7 +205,7 @@ jobs:
           BUILD_JOBS: ${{ toJSON(needs) }}
           ARTIFACT_DOWNLOADS: ${{ toJSON(steps) }}
         run: >-
-          python .github/scripts/inspect_test_build.py result
+          python -m guanaco inspect result
           --plan work/test-plan.json --prepared work/prepared
           --receipts work/receipts --output work/report
       - name: Upload the report on success or failure
