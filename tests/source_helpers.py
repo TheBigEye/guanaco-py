@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import zipfile
 
+from helpers import archive_member
+
 METADATA = """[build-system]
 requires = ["scikit-build-core[pyproject]>=0.9.2"]
 build-backend = "scikit_build_core.build"
@@ -49,19 +51,11 @@ def fixture_source(tmp_path, version: str = "0.3.49"):
 
 
 def zip_source(path, files: dict) -> None:
-    """Write a GitHub-style ZIP: one root directory containing `files`."""
+    """Write a GitHub-style ZIP: one root directory containing `files`.
+
+    Members go through :func:`helpers.archive_member` so the archive is byte
+    for byte reproducible: the manifest hashes every downloaded snapshot.
+    """
     with zipfile.ZipFile(path, "w") as archive:
         for name, data in files.items():
-            archive.writestr("repo-sha/" + name, data)
-
-
-def raw_zip_member(name: str) -> zipfile.ZipInfo:
-    """Keep an adversarial ZIP name identical on every test host.
-
-    ``ZipInfo(name)`` would replace backslashes on Windows and truncate NUL
-    bytes, so both fields are set afterwards and the archive really contains
-    the requested name.
-    """
-    member = zipfile.ZipInfo()
-    member.filename = member.orig_filename = name
-    return member
+            archive.writestr(archive_member("repo-sha/" + name), data)

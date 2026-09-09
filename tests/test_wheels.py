@@ -9,13 +9,13 @@ from pathlib import Path
 import pytest
 from helpers import (
     SHA_B,
+    archive_member,
     make_plan,
     manifest_for,
     native_header,
     write_wheel,
     zip_contents,
 )
-from source_helpers import raw_zip_member
 
 from guanaco.models import Channel, Platform
 from guanaco.wheels import WheelError, WheelValidator
@@ -179,7 +179,7 @@ class TestContents:
         contents = _members(wheel)
         zip_contents(wheel, contents)
         with zipfile.ZipFile(wheel, "a") as archive:
-            archive.writestr(raw_zip_member("../../../escape.py"), b"nope")
+            archive.writestr(archive_member("../../../escape.py"), b"nope")
         with pytest.raises(WheelError):
             WheelValidator(settings).verify(wheel, manifest, Channel("cpu"), Platform.LINUX)
 

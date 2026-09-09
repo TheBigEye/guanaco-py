@@ -9,7 +9,7 @@ import urllib.error
 import zipfile
 
 import pytest
-from source_helpers import raw_zip_member
+from helpers import archive_member
 
 from guanaco.transfer import (
     Archive,
@@ -228,8 +228,8 @@ class TestArchiveExtraction:
     def test_rejects_a_traversal_member(self, tmp_path):
         archive = tmp_path / "evil.zip"
         with zipfile.ZipFile(archive, "w") as zipped:
-            zipped.writestr(raw_zip_member("root/"), "")
-            zipped.writestr(raw_zip_member("root/../escape.txt"), "nope")
+            zipped.writestr(archive_member("root/"), "")
+            zipped.writestr(archive_member("root/../escape.txt"), "nope")
         with pytest.raises(TransferError):
             Archive.extract(archive, tmp_path / "out")
         assert not (tmp_path / "escape.txt").exists()

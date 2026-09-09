@@ -345,6 +345,27 @@ def native_header(platform: str) -> bytes:
     return bytes(header)
 
 
+ARCHIVE_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+
+
+def archive_member(name: str) -> zipfile.ZipInfo:
+    """Return a ZIP entry carrying a fixed timestamp and the name as written.
+
+    ``ZipFile.writestr(name, data)`` stamps the entry with the current time, so
+    two archives with identical contents differ byte for byte when they are
+    built either side of a second boundary. The source manifest hashes the
+    downloaded archives, and a test compares two preparations, so that
+    timestamp would make the result depend on how fast the machine is.
+
+    ``ZipInfo(name)`` also rewrites separators on Windows and truncates the
+    name at a NUL byte, so both fields are restored afterwards to keep
+    deliberately hostile names intact.
+    """
+    member = zipfile.ZipInfo(name, date_time=ARCHIVE_TIMESTAMP)
+    member.filename = member.orig_filename = name
+    return member
+
+
 def zip_contents(path: Path, contents: dict, *, record: bool = True) -> None:
     """Write a ZIP, generating a matching ``RECORD`` unless asked not to."""
     if record:
@@ -366,7 +387,7 @@ def zip_contents(path: Path, contents: dict, *, record: bool = True) -> None:
         contents[record_path] = output.getvalue().encode()
     with zipfile.ZipFile(path, "w") as archive:
         for name, data in contents.items():
-            archive.writestr(name, data)
+            archive.writestr(archive_member(name), data)
 
 
 def write_wheel(
