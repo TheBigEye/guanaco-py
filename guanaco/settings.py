@@ -4,6 +4,10 @@ Everything the build needs to know -- which repository we publish to, which
 upstream we follow, which Python versions and CUDA toolkits we build for --
 lives in ``.github/build-matrix.json``. This module turns that file into
 typed, self-validating objects and hands them to the rest of the package.
+
+Nothing here is hardcoded on purpose. Renaming the repository, renaming the
+distribution, adding a CUDA toolkit or dropping a Python version are all
+configuration edits; no Python file has to change.
 """
 
 from __future__ import annotations

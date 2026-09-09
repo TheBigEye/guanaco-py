@@ -128,7 +128,6 @@ class WheelValidator:
             platform=expected_platform,
         )
 
-
     def verify(
         self,
         wheel: Path,
@@ -160,7 +159,6 @@ class WheelValidator:
             raise WheelError(f"Invalid wheel archive: {wheel.name}") from error
         print(f"Verified {wheel.name}: metadata, RECORD, native architecture and upstream code")
         return identity
-
 
     def verify_directory(
         self,
@@ -198,7 +196,6 @@ class WheelValidator:
                 raise WheelError("Duplicate Python build in matrix")
             seen.add(identity.python)
         return wheels
-
 
     def receipt(
         self,
@@ -253,14 +250,13 @@ class WheelValidator:
                 files.add(member.filename)
         return files
 
-
-    def _check_metadata(self, archive: zipfile.ZipFile, files: set[str], identity: WheelIdentity) -> None:
-        """ Check ``METADATA`` and ``WHEEL`` against the filename's promise. """
-
+    def _check_metadata(
+        self, archive: zipfile.ZipFile, files: set[str], identity: WheelIdentity
+    ) -> None:
+        """Check ``METADATA`` and ``WHEEL`` against the filename's promise."""
         metadata_path = f"{identity.dist_info}/METADATA"
         if {name for name in files if name.endswith(".dist-info/METADATA")} != {metadata_path}:
             raise WheelError("Wheel filename was renamed without rebuilding distribution metadata")
-
         metadata = email.parser.BytesParser().parsebytes(archive.read(metadata_path))
         name = re.sub(r"[-_.]+", "-", self._single(metadata, "Name")).lower()
         if (
@@ -275,21 +271,18 @@ class WheelValidator:
         wheel_path = f"{identity.dist_info}/WHEEL"
         if wheel_path not in files:
             raise WheelError("Wheel is missing its WHEEL metadata")
-
         wheel = email.parser.BytesParser().parsebytes(archive.read(wheel_path))
         if self._single(wheel, "Wheel-Version") != "1.0":
             raise WheelError("Unsupported Wheel-Version")
-
         if self._single(wheel, "Root-Is-Purelib").lower() != "false":
             raise WheelError("Native wheel incorrectly declares a pure-Python layout")
-
         if set(wheel.get_all("Tag", [])) != {identity.tag}:
             raise WheelError("WHEEL compatibility tags do not match the filename")
 
-
-    def _check_record(self, archive: zipfile.ZipFile, files: set[str], identity: WheelIdentity) -> None:
-        "" "Re-hash every file the ``RECORD`` claims, streaming large libraries. """
-
+    def _check_record(
+        self, archive: zipfile.ZipFile, files: set[str], identity: WheelIdentity
+    ) -> None:
+        """Re-hash every file the ``RECORD`` claims, streaming large libraries."""
         record_path = f"{identity.dist_info}/RECORD"
         if record_path not in files:
             raise WheelError("Wheel is missing RECORD")
@@ -327,10 +320,10 @@ class WheelValidator:
             if encoded != expected or length != int(size):
                 raise WheelError(f"RECORD integrity mismatch: {name}")
 
-
-    def _check_runtime(self, archive: zipfile.ZipFile, files: set[str], manifest: SourceManifest) -> None:
-        """ Check that the bindings are exactly the prepared source, byte for byte. """
-
+    def _check_runtime(
+        self, archive: zipfile.ZipFile, files: set[str], manifest: SourceManifest
+    ) -> None:
+        """Check that the bindings are exactly the prepared source, byte for byte."""
         expected = manifest.runtime_sha256
         actual = {name for name in files if name.endswith((".py", ".pyi", "/py.typed"))}
         expected_python = {name for name in expected if name.endswith((".py", ".pyi", "/py.typed"))}
@@ -350,9 +343,8 @@ class WheelValidator:
         if assignments != [manifest.version]:
             raise WheelError("llama_cpp.__version__ does not match the upstream release")
 
-
     def _check_native(self, archive: zipfile.ZipFile, files: set[str], platform: Platform) -> None:
-        """ Check that the bundled native libraries are really x86-64 binaries. """
+        """Check that the bundled native libraries are really x86-64 binaries."""
         pattern = r".+\.dll" if platform.is_windows else r".+\.so(?:[.][A-Za-z0-9_.-]+)?"
         native = [
             name
