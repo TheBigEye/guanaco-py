@@ -32,7 +32,8 @@ jobs:
       linux: ${{ steps.config.outputs.linux }}
       windows: ${{ steps.config.outputs.windows }}
       test_only: ${{ steps.config.outputs.test_only }}
-      artifact_prefix: ${{ steps.config.outputs.artifact_prefix }}
+      artifact_linux: ${{ steps.config.outputs.artifact_linux }}
+      artifact_windows: ${{ steps.config.outputs.artifact_windows }}
     steps:
       - uses: actions/checkout@v7
         with:
