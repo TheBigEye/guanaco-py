@@ -2,7 +2,9 @@
 
 CI lints the workflows with actionlint, which catches a reference to an
 output a job never declared. This module checks the same contract locally
-with PyYAML, so the mistake is caught before it reaches a runner.
+with PyYAML, so the mistake is caught before it reaches a runner. It does not
+replace actionlint: it covers only the wiring mistakes that are easy to make
+when a job's outputs and the jobs consuming them are edited apart.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.y*ml"))
 
 NEEDS_OUTPUT = re.compile(r"needs\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)")
 NEEDS_JOB = re.compile(r"needs\.([A-Za-z0-9_-]+)")
+SHELL_VARIABLE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _walk(node):
@@ -84,4 +87,26 @@ def test_every_job_it_needs_exists(path: Path):
             for name in NEEDS_JOB.findall(text):
                 if name not in known:
                     problems.append(f"{consumer} references needs.{name}")
+    assert not problems, f"{path.name}: {sorted(set(problems))}"
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda path: path.name)
+def test_cibuildwheel_commands_carry_no_shell_variables(path: Path):
+    """A ``CIBW_*`` value runs inside a container, without the step's environment.
+
+    cibuildwheel does not forward the step's own variables into the build
+    container, so ``$PACKAGE`` arrives empty there. Interpolate with
+    ``${{ ... }}`` instead: Actions resolves it while the workflow is built.
+    """
+    problems = []
+    for job in _jobs(path).values():
+        for step in job.get("steps") or []:
+            variables = step.get("env")
+            if not isinstance(variables, dict):
+                continue
+            for key, value in variables.items():
+                if not str(key).startswith("CIBW_"):
+                    continue
+                for name in SHELL_VARIABLE.findall(str(value)):
+                    problems.append(f"{key} depends on {name}")
     assert not problems, f"{path.name}: {sorted(set(problems))}"

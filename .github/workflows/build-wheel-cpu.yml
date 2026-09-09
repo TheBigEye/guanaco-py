@@ -88,7 +88,6 @@ jobs:
           package-dir: work/source
           output-dir: wheelhouse
         env:
-          PACKAGE: ${{ steps.config.outputs.package }}
           CIBW_BUILD: ${{ steps.config.outputs.build }}
           CIBW_ARCHS: ${{ matrix.cibw_archs }}
           CIBW_SKIP: "*-musllinux_*"
@@ -102,9 +101,12 @@ jobs:
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
             auditwheel show {wheel} &&
             auditwheel repair --only-plat --plat manylinux_2_34_x86_64 -w {dest_dir} {wheel}
+          # The name is interpolated by Actions, not by the shell:
+          # cibuildwheel runs this inside the manylinux container, where
+          # this step's own environment variables are not available.
           CIBW_TEST_COMMAND: >-
             python -c "import importlib.metadata as m; import llama_cpp;
-            assert m.version('$PACKAGE') == llama_cpp.__version__;
+            assert m.version('${{ steps.config.outputs.package }}') == llama_cpp.__version__;
             print(llama_cpp.llama_print_system_info().decode())"
 
       - name: Validate the selected Python matrix, file integrity and bindings
