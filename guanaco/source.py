@@ -227,7 +227,8 @@ class MetadataAdapter:
         after = tomlkit.dumps(document)
         if tomlkit.parse(after).unwrap() != document.unwrap():
             raise SourceError("Metadata serialization changed the TOML table structure")
-        path.write_text(after, encoding="utf-8")
+        with path.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(after)
         return "".join(
             difflib.unified_diff(
                 before.splitlines(keepends=True),

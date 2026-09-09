@@ -39,9 +39,14 @@ def require_test_plan(path: Path) -> Plan:
 
 
 def _write_markdown(path: Path, text: str) -> None:
-    """Write a Markdown file with stable, Unix line endings."""
+    """Write a Markdown file with stable, Unix line endings.
+
+    ``Path.write_text`` only learned about ``newline`` in Python 3.10, and the
+    supported matrix starts at 3.9, so the file is opened explicitly instead.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+    with path.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(text)
 
 
 class ReportWriter:
@@ -71,7 +76,7 @@ class ReportWriter:
         if log is not None and Path(log).is_file():
             shutil.copyfile(log, output / "preparation.log")
 
-        summary = "# Test build source - NOT a release\n\n"
+        summary = "# Test build source — NOT a release\n\n"
         manifest_path = Path(prepared) / "build-manifest.json"
         if not manifest_path.is_file():
             _write_markdown(
@@ -210,7 +215,7 @@ class ReportWriter:
         )
         _write_markdown(
             output / "README.md",
-            f"# Test wheels - {channel} / {platform}\n\n"
+            f"# Test wheels — {channel} / {platform}\n\n"
             f"Verification step: **{verification}**. Wheels present: **{len(records)}**.\n\n"
             "`wheels.json` contains SHA256, sizes, METADATA/WHEEL text and the ZIP member "
             "inventory. A downloadable test wheel is NOT automatically a validated wheel: "
@@ -314,7 +319,7 @@ class ReportWriter:
             write_json(output / "validated-test-build.json", gate.to_mapping())
 
         summary = (
-            f"# Test build: {'PASS' if success else 'FAIL'} - no release created\n\n"
+            f"# Test build: {'PASS' if success else 'FAIL'} — no release created\n\n"
             f"- Upstream: `{plan.version}` / `{plan.origin.tag}`\n"
             f"- Source SHA: `{plan.origin.commit}`\n"
             f"- Requested: **{sum(len(spec.python_versions) for spec in specs.values())} wheels**\n"

@@ -26,6 +26,18 @@ def helper():
     return module
 
 
+@pytest.fixture(autouse=True)
+def _inside_a_linux_container(monkeypatch, helper):
+    """Pretend we are the only platform these images support.
+
+    The helper refuses to run anywhere but ``linux/amd64``. These tests are
+    about its naming and installation logic, so the guard is satisfied instead
+    of skipped: that way the Windows runners exercise the same code.
+    """
+    monkeypatch.setattr(helper.sys, "platform", "linux")
+    monkeypatch.setattr(helper.platform, "machine", lambda: "x86_64")
+
+
 class TestReleaseBase:
     def test_cpu_keeps_the_bare_tag(self, helper):
         from guanaco.channels import Channel

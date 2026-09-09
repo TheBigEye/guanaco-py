@@ -67,10 +67,15 @@ def gitlink(path: str = "vendor/llama.cpp", commit: str = SHA_B) -> dict:
 
 
 def add_patch(directory: Path, name: str = "0001-example.patch", text: str = PATCH_TEXT) -> Path:
-    """Drop a patch into the patch directory so it gets applied."""
+    """Drop a patch into the patch directory so it gets applied.
+
+    Bytes are written verbatim: ``write_text`` would translate ``\n`` into
+    ``\r\n`` on Windows, and a CRLF patch never applies to the LF files the
+    source archive is extracted from.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     patch = directory / name
-    patch.write_text(text, encoding="utf-8")
+    patch.write_bytes(text.encode("utf-8"))
     return patch
 
 
@@ -83,7 +88,7 @@ class TestPatchSet:
     def _source(self, tmp_path) -> Path:
         source = tmp_path / "src"
         source.mkdir(parents=True)
-        (source / "file.txt").write_text("one\ntwo\n", encoding="utf-8")
+        (source / "file.txt").write_bytes(b"one\ntwo\n")
         return source
 
     def test_applies_with_git_when_available(self, tmp_path):
