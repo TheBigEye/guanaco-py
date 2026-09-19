@@ -83,7 +83,7 @@ jobs:
 
       - name: Build, repair and smoke-test wheels
         id: build
-        uses: pypa/cibuildwheel@v3.3.1
+        uses: pypa/cibuildwheel@v4.2.1
         with:
           package-dir: work/source
           output-dir: wheelhouse
