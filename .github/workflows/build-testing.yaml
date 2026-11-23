@@ -15,13 +15,34 @@ concurrency:
 
 jobs:
   tests:
-    runs-on: ${{ matrix.os }}
+    # Keep check_os as the existing required-check label. For the Linux/Python
+    # 3.9 row the actual runner is pinned to 24.04 because ubuntu-latest moved
+    # to 26.04, which no longer has Python 3.9 in actions/setup-python's manifest.
+    name: tests (${{ matrix.check_os }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python: ["3.9", "3.13", "3.14"]
+        include:
+          - check_os: ubuntu-latest
+            runner: ubuntu-24.04
+            python: "3.9"
+          - check_os: ubuntu-latest
+            runner: ubuntu-latest
+            python: "3.13"
+          - check_os: ubuntu-latest
+            runner: ubuntu-latest
+            python: "3.14"
+          - check_os: windows-latest
+            runner: windows-latest
+            python: "3.9"
+          - check_os: windows-latest
+            runner: windows-latest
+            python: "3.13"
+          - check_os: windows-latest
+            runner: windows-latest
+            python: "3.14"
     steps:
       - uses: actions/checkout@v7
         with:

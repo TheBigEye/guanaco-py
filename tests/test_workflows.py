@@ -52,6 +52,20 @@ def test_there_are_workflows_to_check():
     assert WORKFLOWS, "no workflow files found"
 
 
+def test_python39_linux_runner_is_pinned_without_renaming_required_check():
+    """Keep 3.9 coverage on a runner that still provides it, preserving check IDs."""
+    path = ROOT / ".github" / "workflows" / "build-testing.yaml"
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    job = workflow["jobs"]["tests"]
+    rows = job["strategy"]["matrix"]["include"]
+    linux_39 = next(
+        row for row in rows if row["check_os"] == "ubuntu-latest" and row["python"] == "3.9"
+    )
+
+    assert linux_39["runner"] == "ubuntu-24.04"
+    assert job["name"] == "tests (${{ matrix.check_os }}, ${{ matrix.python }})"
+
+
 @pytest.mark.parametrize("path", WORKFLOWS, ids=lambda path: path.name)
 def test_every_consumed_output_is_declared(path: Path):
     """A job must declare an output before another job can read it."""
